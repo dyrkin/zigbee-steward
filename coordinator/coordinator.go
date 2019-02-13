@@ -274,51 +274,44 @@ func configure(coordinator *Coordinator) {
 	coordinator.Reset()
 	np := coordinator.networkProcessor
 
+	mandatorySetting := func(call func() error) {
+		err := call()
+		if err != nil {
+			log.Fatal(err)
+		}
+	}
+
 	t := time.Now()
+	np.SysSetTime(0, uint8(t.Hour()), uint8(t.Minute()), uint8(t.Second()),
+		uint8(t.Month()), uint8(t.Day()), uint16(t.Year()))
 
-	_, err := np.SysSetTime(0, uint8(t.Hour()), uint8(t.Minute()), uint8(t.Second()), uint8(t.Month()), uint8(t.Day()), uint16(t.Year()))
-
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	_, err = np.UtilSetPreCfgKey(coordinator.config.NetworkKey)
-
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	_, err = np.SapiZbWriteConfiguration(0x87, []uint8{0}) //logical type
-
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	_, err = np.UtilSetPanId(coordinator.config.PanId)
-
-	if err != nil {
-		log.Fatal(err)
-	}
-
+	mandatorySetting(func() error {
+		_, err := np.UtilSetPreCfgKey(coordinator.config.NetworkKey)
+		return err
+	})
+	//logical type
+	mandatorySetting(func() error {
+		_, err := np.SapiZbWriteConfiguration(0x87, []uint8{0})
+		return err
+	})
+	mandatorySetting(func() error {
+		_, err := np.UtilSetPanId(coordinator.config.PanId)
+		return err
+	})
 	//zdo direc cb
-	_, err = np.SapiZbWriteConfiguration(0x8F, []uint8{1})
-
-	if err != nil {
-		log.Fatal(err)
-	}
-
+	mandatorySetting(func() error {
+		_, err := np.SapiZbWriteConfiguration(0x8F, []uint8{1})
+		return err
+	})
 	//enable security
-	_, err = np.SapiZbWriteConfiguration(0x64, []uint8{1})
-
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	_, err = np.SysSetExtAddr(coordinator.config.IEEEAddress)
-
-	if err != nil {
-		log.Fatal(err)
-	}
+	mandatorySetting(func() error {
+		_, err := np.SapiZbWriteConfiguration(0x64, []uint8{1})
+		return err
+	})
+	mandatorySetting(func() error {
+		_, err := np.SysSetExtAddr(coordinator.config.IEEEAddress)
+		return err
+	})
 
 	channels := &znp.Channels{}
 	for _, v := range coordinator.config.Channels {
@@ -358,11 +351,10 @@ func configure(coordinator *Coordinator) {
 		}
 	}
 
-	_, err = coordinator.networkProcessor.UtilSetChannels(channels)
-
-	if err != nil {
-		log.Fatal(err)
-	}
+	mandatorySetting(func() error {
+		_, err := coordinator.networkProcessor.UtilSetChannels(channels)
+		return err
+	})
 	coordinator.Reset()
 }
 
