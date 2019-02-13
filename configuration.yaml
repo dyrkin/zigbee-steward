@@ -2,7 +2,7 @@ PermitJoin: true
 IEEEAddress: '0x7a2d6265656e6574'
 PanId: 0x1234
 NetworkKey: [4, 3, 2, 1, 9, 8, 7, 6, 255, 254, 253, 252, 50, 49, 48, 47]
-Channels: [11]
+Channels: [11, 12]
 Led: false
 
 Serial:

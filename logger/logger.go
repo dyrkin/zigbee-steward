@@ -5,11 +5,14 @@ import (
 	"os"
 )
 
-var log = logging.MustGetLogger("main")
+type Logger struct {
+	*logging.Logger
+}
 
-func init() {
+func MustGetLogger(module string) *Logger {
+	log := logging.MustGetLogger(module)
 	format := logging.MustStringFormatter(
-		`%{color}%{time:15:04:05.000} %{level:.5s} %{color:reset} %{message}`,
+		`%{color}%{time:15:04:05.000} %{level:.5s} %{module} %{color:reset} %{message}`,
 	)
 
 	backend := logging.NewLogBackend(os.Stdout, "", 0)
@@ -18,40 +21,41 @@ func init() {
 	backendLeveled.SetLevel(logging.DEBUG, "")
 
 	logging.SetBackend(backendLeveled)
+	return &Logger{log}
 }
 
-func Debugf(format string, args ...interface{}) {
+func (log *Logger) Debugf(format string, args ...interface{}) {
 	if log.IsEnabledFor(logging.DEBUG) {
 		renderLazyArgs(args...)
-		log.Debugf(format, args...)
+		log.Logger.Debugf(format, args...)
 	}
 }
 
-func Infof(format string, args ...interface{}) {
+func (log *Logger) Infof(format string, args ...interface{}) {
 	if log.IsEnabledFor(logging.INFO) {
 		renderLazyArgs(args...)
-		log.Infof(format, args...)
+		log.Logger.Infof(format, args...)
 	}
 }
 
-func Info(args ...interface{}) {
+func (log *Logger) Info(args ...interface{}) {
 	if log.IsEnabledFor(logging.INFO) {
 		renderLazyArgs(args...)
-		log.Info(args...)
+		log.Logger.Info(args...)
 	}
 }
 
-func Errorf(format string, args ...interface{}) {
+func (log *Logger) Errorf(format string, args ...interface{}) {
 	if log.IsEnabledFor(logging.ERROR) {
 		renderLazyArgs(args...)
-		log.Errorf(format, args...)
+		log.Logger.Errorf(format, args...)
 	}
 }
 
-func Error(args ...interface{}) {
+func (log *Logger) Error(args ...interface{}) {
 	if log.IsEnabledFor(logging.ERROR) {
 		renderLazyArgs(args...)
-		log.Error(args...)
+		log.Logger.Error(args...)
 	}
 }
 

@@ -1,22 +1,27 @@
 package model
 
+import "github.com/dyrkin/znp-go"
+
 type PowerSource uint8
 
 const (
-	Unknown                         PowerSource = 0
-	MainsSinglePhase                PowerSource = 1
-	Mains2Phase                     PowerSource = 2
-	Battery                         PowerSource = 3
-	DCSource                        PowerSource = 4
-	EmergencyMainsConstantlyPowered PowerSource = 5
-	EmergencyMainsAndTransfer       PowerSource = 6
+	Unknown PowerSource = iota
+	MainsSinglePhase
+	Mains2Phase
+	Battery
+	DCSource
+	EmergencyMainsConstantlyPowered
+	EmergencyMainsAndTransfer
 )
 
 type Device struct {
 	Manufacturer   string
 	ManufacturerId uint16
 	Model          string
+	LogicalType    znp.LogicalType
+	MainPowered    bool
 	PowerSource    PowerSource
+	NetworkAddress string
 	IEEEAddress    string
 	Endpoints      []*Endpoint
 }

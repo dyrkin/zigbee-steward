@@ -6,3 +6,6 @@ import (
 )
 
 var SysResetIndType = reflect.TypeOf(&znp.SysResetInd{})
+var ZdoActiveEpRspType = reflect.TypeOf(&znp.ZdoActiveEpRsp{})
+var ZdoSimpleDescRspType = reflect.TypeOf(&znp.ZdoSimpleDescRsp{})
+var ZdoNodeDescRspType = reflect.TypeOf(&znp.ZdoNodeDescRsp{})

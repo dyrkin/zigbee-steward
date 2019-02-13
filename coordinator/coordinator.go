@@ -2,8 +2,10 @@ package coordinator
 
 import (
 	"fmt"
+	"github.com/dyrkin/bin"
+	"github.com/dyrkin/zcl-go/cluster"
+	"github.com/dyrkin/zcl-go/frame"
 	"github.com/tv42/topic"
-	"log"
 	"reflect"
 	"time"
 
@@ -15,12 +17,19 @@ import (
 	"go.bug.st/serial.v1"
 )
 
+var log = logger.MustGetLogger("coordinator")
+
+type Details struct {
+	nwkAddress string
+}
+
 type MessageChannels struct {
 	onError           chan error
 	onDeviceAnnounce  chan *znp.ZdoEndDeviceAnnceInd
 	onDeviceLeave     chan *znp.ZdoLeaveInd
 	onDeviceTc        chan *znp.ZdoTcDevInd
 	onIncomingMessage chan *znp.AfIncomingMessage
+	onDataConfirm     chan *znp.AfDataConfirm
 	broadcast         *topic.Topic
 }
 
@@ -29,10 +38,15 @@ type Coordinator struct {
 	started          bool
 	networkProcessor *znp.Znp
 	messageChannels  *MessageChannels
+	details          *Details
 }
 
 func (c *Coordinator) OnIncomingMessage() chan *znp.AfIncomingMessage {
 	return c.messageChannels.onIncomingMessage
+}
+
+func (c *Coordinator) OnDataConfirm() chan *znp.AfDataConfirm {
+	return c.messageChannels.onDataConfirm
 }
 
 func (c *Coordinator) OnDeviceTc() chan *znp.ZdoTcDevInd {
@@ -58,16 +72,18 @@ func New(config *configuration.Configuration) *Coordinator {
 		onDeviceLeave:     make(chan *znp.ZdoLeaveInd, 100),
 		onDeviceTc:        make(chan *znp.ZdoTcDevInd, 100),
 		onIncomingMessage: make(chan *znp.AfIncomingMessage, 100),
+		onDataConfirm:     make(chan *znp.AfDataConfirm, 100),
 		broadcast:         topic.New(),
 	}
 	return &Coordinator{
 		config:          config,
 		messageChannels: messageChannels,
+		details:         &Details{},
 	}
 }
 
 func (c *Coordinator) Start() error {
-	logger.Info("Starting coordinator...")
+	log.Info("Starting coordinator...")
 	port, err := openPort(c.config)
 	if err != nil {
 		return err
@@ -79,45 +95,101 @@ func (c *Coordinator) Start() error {
 	configure(c)
 	subscribe(c)
 	startup(c)
+	enrichNetworkDetails(c)
 	switchLed(c)
 	registerEndpoints(c)
+	permitJoin(c)
+	printNetworkInfo(c)
 	c.started = true
-	logger.Info("Coordinator started")
+	log.Info("Coordinator started")
 	return nil
 }
 
-func switchLed(coordinator *Coordinator) {
-	mode := znp.ModeOFF
-	if coordinator.config.Led {
-		mode = znp.ModeON
-	}
-	coordinator.networkProcessor.UtilLedControl(1, mode)
-}
-
-func startup(coordinator *Coordinator) {
-	_, err := coordinator.networkProcessor.ZdoStartupFromApp(30)
-	if err != nil {
-		log.Fatal(err)
-	}
+func printNetworkInfo(coordinator *Coordinator) {
+	res, _ := coordinator.RequestNodeDescription(coordinator.details.nwkAddress)
+	log.Info(spew.Sdump(res))
 }
 
 func (c *Coordinator) Reset() {
-	reset := func() {
-		c.networkProcessor.SysResetReq(1)
+	reset := func() error {
+		return c.networkProcessor.SysResetReq(1)
 	}
-	_, err := c.SyncCallRetryable(reset, SysResetIndType, 10*time.Second, 3)
+
+	_, err := c.SyncCallRetryable(reset, SysResetIndType, 10*time.Second, 5)
 	if err != nil {
 		log.Fatal(err)
 	}
 }
 
-func (c *Coordinator) SyncCall(call func(), expectedType reflect.Type, timeout time.Duration) (interface{}, error) {
+func (c *Coordinator) ReadAttributes(nwkAddress string, transactionId uint8, attributeIds []uint16) error {
+	np := c.networkProcessor
+	options := &znp.AfDataRequestOptions{}
+	f, err := frame.New().
+		DisableDefaultResponse(true).
+		FrameType(frame.FrameTypeGlobal).
+		Direction(frame.DirectionClientServer).
+		CommandId(0x00).
+		Command(&cluster.ReadAttributesCommand{AttributeIDs: attributeIds}).
+		Build()
+
+	if err != nil {
+		return err
+	}
+
+	_, err = np.AfDataRequest(nwkAddress, 255, 1, 0x0000, transactionId, options, 15, bin.Encode(f))
+
+	return err
+}
+
+func (c *Coordinator) RequestActiveEndpoints(nwkAddress string) (*znp.ZdoActiveEpRsp, error) {
+	np := c.networkProcessor
+	activeEpReq := func() error {
+		_, err := np.ZdoActiveEpReq(nwkAddress, nwkAddress)
+		return err
+	}
+
+	response, err := c.SyncCallRetryable(activeEpReq, ZdoActiveEpRspType, 10*time.Second, 3)
+	if err == nil {
+		return response.(*znp.ZdoActiveEpRsp), nil
+	}
+	return nil, err
+}
+
+func (c *Coordinator) RequestNodeDescription(nwkAddress string) (*znp.ZdoNodeDescRsp, error) {
+	np := c.networkProcessor
+	activeEpReq := func() error {
+		_, err := np.ZdoNodeDescReq(nwkAddress, nwkAddress)
+		return err
+	}
+
+	response, err := c.SyncCallRetryable(activeEpReq, ZdoNodeDescRspType, 10*time.Second, 3)
+	if err == nil {
+		return response.(*znp.ZdoNodeDescRsp), nil
+	}
+	return nil, err
+}
+
+func (c *Coordinator) RequestSimpleDescription(nwkAddress string, endpoint uint8) (*znp.ZdoSimpleDescRsp, error) {
+	np := c.networkProcessor
+	activeEpReq := func() error {
+		_, err := np.ZdoSimpleDescReq(nwkAddress, nwkAddress, endpoint)
+		return err
+	}
+
+	response, err := c.SyncCallRetryable(activeEpReq, ZdoSimpleDescRspType, 10*time.Second, 3)
+	if err == nil {
+		return response.(*znp.ZdoSimpleDescRsp), nil
+	}
+	return nil, err
+}
+
+func (c *Coordinator) SyncCall(call func() error, expectedType reflect.Type, timeout time.Duration) (interface{}, error) {
 	receiver := make(chan interface{})
-	c.messageChannels.broadcast.Register(receiver)
 	responseChannel := make(chan interface{}, 1)
 	errorChannel := make(chan error, 1)
 	deadline := time.NewTimer(timeout)
 	go func() {
+		c.messageChannels.broadcast.Register(receiver)
 		for {
 			select {
 			case response := <-receiver:
@@ -134,9 +206,14 @@ func (c *Coordinator) SyncCall(call func(), expectedType reflect.Type, timeout t
 			}
 		}
 	}()
-	call()
+	err := call()
+	if err != nil {
+		deadline.Stop()
+		c.messageChannels.broadcast.Unregister(receiver)
+		return nil, err
+	}
 	select {
-	case err := <-errorChannel:
+	case err = <-errorChannel:
 		c.messageChannels.broadcast.Unregister(receiver)
 		return nil, err
 	case response := <-responseChannel:
@@ -145,14 +222,14 @@ func (c *Coordinator) SyncCall(call func(), expectedType reflect.Type, timeout t
 	}
 }
 
-func (c *Coordinator) SyncCallRetryable(call func(), expectedType reflect.Type, timeout time.Duration, retries int) (interface{}, error) {
+func (c *Coordinator) SyncCallRetryable(call func() error, expectedType reflect.Type, timeout time.Duration, retries int) (interface{}, error) {
 	response, err := c.SyncCall(call, expectedType, timeout)
 	switch {
 	case err != nil && retries > 0:
-		logger.Errorf("%s. Retries: %d", err, retries)
+		log.Errorf("%s. Retries: %d", err, retries)
 		return c.SyncCallRetryable(call, expectedType, timeout, retries-1)
 	case err != nil && retries == 0:
-		logger.Errorf("failure: %s", err)
+		log.Errorf("failure: %s", err)
 		return nil, err
 	}
 	return response, nil
@@ -166,7 +243,7 @@ func mapMessageChannels(messageChannels *MessageChannels, networkProcessor *znp.
 				messageChannels.onError <- err
 			case incoming := <-networkProcessor.AsyncInbound():
 				debugIncoming := func(format string) {
-					logger.Debugf(format, func() string { return spew.Sdump(incoming) })
+					log.Debugf(format, func() string { return spew.Sdump(incoming) })
 				}
 				switch message := incoming.(type) {
 				case *znp.ZdoEndDeviceAnnceInd:
@@ -181,6 +258,9 @@ func mapMessageChannels(messageChannels *MessageChannels, networkProcessor *znp.
 				case *znp.AfIncomingMessage:
 					debugIncoming("Incoming message:\n%s")
 					messageChannels.onIncomingMessage <- message
+				case *znp.AfDataConfirm:
+					debugIncoming("Data confirm:\n%s")
+					messageChannels.onDataConfirm <- message
 				default:
 					debugIncoming("Message:\n%s")
 					messageChannels.broadcast.Broadcast <- message
@@ -194,7 +274,15 @@ func configure(coordinator *Coordinator) {
 	coordinator.Reset()
 	np := coordinator.networkProcessor
 
-	_, err := np.UtilSetPreCfgKey(coordinator.config.NetworkKey)
+	t := time.Now()
+
+	_, err := np.SysSetTime(0, uint8(t.Hour()), uint8(t.Minute()), uint8(t.Second()), uint8(t.Month()), uint8(t.Day()), uint16(t.Year()))
+
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	_, err = np.UtilSetPreCfgKey(coordinator.config.NetworkKey)
 
 	if err != nil {
 		log.Fatal(err)
@@ -302,12 +390,44 @@ func registerEndpoints(coordinator *Coordinator) {
 	np.AfRegister(0x06, 0x0109, 0x0005, 0x1, znp.LatencyNoLatency, []uint16{}, []uint16{})
 }
 
+func enrichNetworkDetails(coordinator *Coordinator) {
+	deviceInfo, err := coordinator.networkProcessor.UtilGetDeviceInfo()
+	if err != nil {
+		log.Fatal(err)
+	}
+	coordinator.details.nwkAddress = deviceInfo.ShortAddr
+}
+
+func permitJoin(coordinator *Coordinator) {
+	var timeout uint8 = 0x00
+	if coordinator.config.PermitJoin {
+		timeout = 0xFF
+	}
+	coordinator.networkProcessor.SapiZbPermitJoiningRequest(coordinator.details.nwkAddress, timeout)
+}
+
+func switchLed(coordinator *Coordinator) {
+	mode := znp.ModeOFF
+	if coordinator.config.Led {
+		mode = znp.ModeON
+	}
+	log.Debugf("Led mode [%s]", mode)
+	coordinator.networkProcessor.UtilLedControl(1, mode)
+}
+
+func startup(coordinator *Coordinator) {
+	_, err := coordinator.networkProcessor.SapiZbStartRequest()
+	if err != nil {
+		log.Fatal(err)
+	}
+}
+
 func openPort(config *configuration.Configuration) (port serial.Port, err error) {
-	logger.Debugf("Opening port [%s] at rate [%d]", config.Serial.PortName, config.Serial.BaudRate)
+	log.Debugf("Opening port [%s] at rate [%d]", config.Serial.PortName, config.Serial.BaudRate)
 	mode := &serial.Mode{BaudRate: config.Serial.BaudRate}
 	port, err = serial.Open(config.Serial.PortName, mode)
 	if err == nil {
-		logger.Debugf("Port [%s] is opened", config.Serial.PortName)
+		log.Debugf("Port [%s] is opened", config.Serial.PortName)
 		err = port.SetRTS(true)
 	}
 	return
