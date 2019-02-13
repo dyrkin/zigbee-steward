@@ -219,7 +219,7 @@ func (s *Steward) enableRegistrationQueue() {
 			device.Endpoints = append(device.Endpoints, endpoint)
 		}
 
-		db.Database.AddDevice(device)
+		db.Database().Tables().Devices.Add(device)
 
 		log.Infof("Registered device [%s]. Manufacturer: [%s], Model: [%s], Logical type: [%s]",
 			ieeeAddress, device.Manufacturer, device.Model, device.LogicalType)

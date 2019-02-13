@@ -7,6 +7,7 @@ require (
 	github.com/dyrkin/zcl-go v0.0.0-20190212084450-3eccaa0c7dc5
 	github.com/dyrkin/znp-go v0.0.0-20190213150617-79fc781b6a7c
 	github.com/ghodss/yaml v1.0.0
+	github.com/natefinch/atomic v0.0.0-20150920032501-a62ce929ffcc
 	github.com/op/go-logging v0.0.0-20160315200505-970db520ece7
 	github.com/tv42/topic v0.0.0-20130729201830-aa72cbe81b48
 	go.bug.st/serial.v1 v0.0.0-20180827123349-5f7892a7bb45
