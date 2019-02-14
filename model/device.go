@@ -26,37 +26,41 @@ type Device struct {
 	Endpoints      []*Endpoint
 }
 
-func (d *Device) SupportedInClusters() []uint16 {
-	var clusters []uint16
+func (d *Device) SupportedInClusters() []*Cluster {
+	return d.supportedClusters(func(e *Endpoint) []*Cluster {
+		return e.InClusterList
+	})
+}
+
+func (d *Device) SupportedOutClusters() []*Cluster {
+	return d.supportedClusters(func(e *Endpoint) []*Cluster {
+		return e.OutClusterList
+	})
+}
+
+func (d *Device) supportedClusters(clusterListExtractor func(e *Endpoint) []*Cluster) []*Cluster {
+	var clusters []*Cluster
 	for _, e := range d.Endpoints {
-		clusters = append(clusters, e.InClusterList...)
+		for _, c := range clusterListExtractor(e) {
+			if c.Supported {
+				clusters = append(clusters, c)
+			}
+		}
+
 	}
 	return clusters
 }
 
-func (d *Device) SupportedOutClusters() []uint16 {
-	var clusters []uint16
-	for _, e := range d.Endpoints {
-		clusters = append(clusters, e.OutClusterList...)
-	}
-	return clusters
+var powerSourceStrings = map[PowerSource]string{
+	Unknown:                         "Unknown",
+	MainsSinglePhase:                "MainsSinglePhase",
+	Mains2Phase:                     "Mains2Phase",
+	Battery:                         "Battery",
+	DCSource:                        "DCSource",
+	EmergencyMainsConstantlyPowered: "EmergencyMainsConstantlyPowered",
+	EmergencyMainsAndTransfer:       "EmergencyMainsAndTransfer",
 }
 
 func (ps PowerSource) String() string {
-	switch ps {
-	case MainsSinglePhase:
-		return "MainsSinglePhase"
-	case Mains2Phase:
-		return "Mains2Phase"
-	case Battery:
-		return "Battery"
-	case DCSource:
-		return "DCSource"
-	case EmergencyMainsConstantlyPowered:
-		return "EmergencyMainsConstantlyPowered"
-	case EmergencyMainsAndTransfer:
-		return "EmergencyMainsAndTransfer"
-	default:
-		return "Unknown"
-	}
+	return powerSourceStrings[ps]
 }

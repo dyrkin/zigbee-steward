@@ -43,6 +43,15 @@ func (devices Devices) Get(ieeeAddress string) (*model.Device, bool) {
 	return device, ok
 }
 
+func (devices Devices) GetByNetworkAddress(networkAddress string) (*model.Device, bool) {
+	for _, d := range devices {
+		if d.NetworkAddress == networkAddress {
+			return d, true
+		}
+	}
+	return nil, false
+}
+
 func (devices Devices) Remove(ieeeAddress string) {
 	update(func() {
 		delete(database.tables.Devices, ieeeAddress)

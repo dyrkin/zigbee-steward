@@ -20,20 +20,43 @@ var log = logger.MustGetLogger("steward")
 var nextTransactionId = frame.MakeDefaultTransactionIdProvider()
 
 type Steward struct {
-	coordinator          *coordinator.Coordinator
-	registrationQueue    chan *znp.ZdoEndDeviceAnnceInd
-	zcl                  *zcl.Zcl
-	incomingMessageTopic *topic.Topic
-	dataConfirmTopic     *topic.Topic
+	coordinator             *coordinator.Coordinator
+	registrationQueue       chan *znp.ZdoEndDeviceAnnceInd
+	zcl                     *zcl.Zcl
+	incomingMessageTopic    *topic.Topic
+	dataConfirmTopic        *topic.Topic
+	onDeviceRegistered      chan *model.Device
+	onDeviceUnregistered    chan *model.Device
+	onDeviceBecameAvailable chan *model.Device
+	onDeviceIncomingMessage chan *model.DeviceIncomingMessage
 }
 
 func New() *Steward {
 	return &Steward{
-		registrationQueue:    make(chan *znp.ZdoEndDeviceAnnceInd),
-		zcl:                  zcl.New(),
-		incomingMessageTopic: topic.New(),
-		dataConfirmTopic:     topic.New(),
+		registrationQueue:       make(chan *znp.ZdoEndDeviceAnnceInd),
+		zcl:                     zcl.New(),
+		incomingMessageTopic:    topic.New(),
+		dataConfirmTopic:        topic.New(),
+		onDeviceRegistered:      make(chan *model.Device, 10),
+		onDeviceUnregistered:    make(chan *model.Device, 10),
+		onDeviceIncomingMessage: make(chan *model.DeviceIncomingMessage, 100),
 	}
+}
+
+func (s *Steward) OnDeviceRegistered() chan *model.Device {
+	return s.onDeviceRegistered
+}
+
+func (s *Steward) OnBecameAvailable() chan *model.Device {
+	return s.onDeviceBecameAvailable
+}
+
+func (s *Steward) OnDeviceUnregistered() chan *model.Device {
+	return s.onDeviceUnregistered
+}
+
+func (s *Steward) OnDeviceIncomingMessage() chan *model.DeviceIncomingMessage {
+	return s.onDeviceIncomingMessage
 }
 
 func (s *Steward) Start(configPath string) {
@@ -45,27 +68,10 @@ func (s *Steward) Start(configPath string) {
 	s.coordinator = coordinator.New(conf)
 	go s.enableRegistrationQueue()
 	go s.enableListeners()
+	go s.incomingMessageProcessor()
 	err = s.coordinator.Start()
 	if err != nil {
 		panic(err)
-	}
-}
-
-func (s *Steward) enableListeners() {
-	for {
-		select {
-		case err := <-s.coordinator.OnError():
-			log.Errorf("Received error: %s", err)
-		case announcedDevice := <-s.coordinator.OnDeviceAnnounce():
-			s.registrationQueue <- announcedDevice
-		case deviceLeave := <-s.coordinator.OnDeviceLeave():
-			s.unregisterDevice(deviceLeave)
-		case _ = <-s.coordinator.OnDeviceTc():
-		case incomingMessage := <-s.coordinator.OnIncomingMessage():
-			s.processIncomingMessage(incomingMessage)
-		case dataConfirm := <-s.coordinator.OnDataConfirm():
-			s.processDataConfirm(dataConfirm)
-		}
 	}
 }
 
@@ -159,6 +165,45 @@ func (s *Steward) SyncDataRequest(nwkAddress string, transactionId uint8, reques
 	}
 }
 
+func (s *Steward) enableListeners() {
+	for {
+		select {
+		case err := <-s.coordinator.OnError():
+			log.Errorf("Received error: %s", err)
+		case announcedDevice := <-s.coordinator.OnDeviceAnnounce():
+			s.registrationQueue <- announcedDevice
+		case deviceLeave := <-s.coordinator.OnDeviceLeave():
+			s.unregisterDevice(deviceLeave)
+		case _ = <-s.coordinator.OnDeviceTc():
+		case incomingMessage := <-s.coordinator.OnIncomingMessage():
+			s.processIncomingMessage(incomingMessage)
+		case dataConfirm := <-s.coordinator.OnDataConfirm():
+			s.processDataConfirm(dataConfirm)
+		}
+	}
+}
+
+func (s *Steward) incomingMessageProcessor() {
+	incomingMessages := make(chan interface{}, 100)
+	s.incomingMessageTopic.Register(incomingMessages)
+	for incoming := range incomingMessages {
+		incomingMessage := incoming.(*zcl.ZclIncomingMessage)
+		if device, ok := db.Database().Tables().Devices.GetByNetworkAddress(incomingMessage.SrcAddr); ok {
+			deviceIncomingMessage := &model.DeviceIncomingMessage{
+				Device:          device,
+				IncomingMessage: incomingMessage,
+			}
+			select {
+			case s.onDeviceIncomingMessage <- deviceIncomingMessage:
+			default:
+				log.Errorf("onDeviceIncomingMessage channel has no capacity. Maybe channel has no subscribers")
+			}
+		} else {
+			log.Errorf("Received message from unknown device [%s]", incomingMessage.SrcAddr)
+		}
+	}
+}
+
 func (s *Steward) enableRegistrationQueue() {
 	for announcedDevice := range s.registrationQueue {
 		s.registerDevice(announcedDevice)
@@ -169,9 +214,14 @@ func (s *Steward) registerDevice(announcedDevice *znp.ZdoEndDeviceAnnceInd) {
 	ieeeAddress := announcedDevice.IEEEAddr
 	log.Infof("Registering device [%s]", ieeeAddress)
 	if device, ok := db.Database().Tables().Devices.Get(ieeeAddress); ok {
-		log.Debugf("Device [%s] is already exists in DB. Just updating network address", ieeeAddress)
+		log.Debugf("Device [%s] already exists in DB. Updating network address", ieeeAddress)
 		device.NetworkAddress = announcedDevice.NwkAddr
 		db.Database().Tables().Devices.Add(device)
+		select {
+		case s.onDeviceBecameAvailable <- device:
+		default:
+			log.Errorf("onDeviceBecameAvailable channel has no capacity. Maybe channel has no subscribers")
+		}
 		return
 	}
 
@@ -229,15 +279,44 @@ func (s *Steward) registerDevice(announcedDevice *znp.ZdoEndDeviceAnnceInd) {
 			log.Errorf("Unable to receive endpoint data: %d. Reason: %s", ep, err)
 			continue
 		}
-		endpoint := model.NewEndpoint(simpleDescription)
+		endpoint := s.createEndpoint(simpleDescription)
 		device.Endpoints = append(device.Endpoints, endpoint)
 	}
 
 	db.Database().Tables().Devices.Add(device)
+	select {
+	case s.onDeviceRegistered <- device:
+	default:
+		log.Errorf("onDeviceRegistered channel has no capacity. Maybe channel has no subscribers")
+	}
 
 	log.Infof("Registered new device [%s]. Manufacturer: [%s], Model: [%s], Logical type: [%s]",
 		ieeeAddress, device.Manufacturer, device.Model, device.LogicalType)
 	log.Debugf("Registered new device:\n%s", func() string { return spew.Sdump(device) })
+}
+
+func (s *Steward) createEndpoint(simpleDescription *znp.ZdoSimpleDescRsp) *model.Endpoint {
+	return &model.Endpoint{
+		Id:             simpleDescription.Endpoint,
+		ProfileId:      simpleDescription.ProfileID,
+		DeviceId:       simpleDescription.DeviceID,
+		DeviceVersion:  simpleDescription.DeviceVersion,
+		InClusterList:  s.createClusters(simpleDescription.InClusterList),
+		OutClusterList: s.createClusters(simpleDescription.OutClusterList),
+	}
+}
+
+func (s *Steward) createClusters(clusterIds []uint16) []*model.Cluster {
+	var clusters []*model.Cluster
+	for _, clusterId := range clusterIds {
+		cl := &model.Cluster{Id: clusterId}
+		if c, ok := s.zcl.ClusterLibrary().Clusters()[cluster.ClusterId(clusterId)]; ok {
+			cl.Supported = true
+			cl.Name = c.Name
+		}
+		clusters = append(clusters, cl)
+	}
+	return clusters
 }
 
 func (s *Steward) processIncomingMessage(incomingMessage *znp.AfIncomingMessage) {
@@ -259,6 +338,12 @@ func (s *Steward) unregisterDevice(deviceLeave *znp.ZdoLeaveInd) {
 	if device, ok := db.Database().Tables().Devices.Get(ieeeAddress); ok {
 		log.Infof("Unregistering device: [%s]", ieeeAddress)
 		db.Database().Tables().Devices.Remove(ieeeAddress)
+		select {
+		case s.onDeviceUnregistered <- device:
+		default:
+			log.Errorf("onDeviceUnregistered channel has no capacity. Maybe channel has no subscribers")
+		}
+
 		log.Infof("Unregistered device [%s]. Manufacturer: [%s], Model: [%s], Logical type: [%s]",
 			ieeeAddress, device.Manufacturer, device.Model, device.LogicalType)
 	}
