@@ -31,6 +31,13 @@ func (log *Logger) Debugf(format string, args ...interface{}) {
 	}
 }
 
+func (log *Logger) Debug(args ...interface{}) {
+	if log.IsEnabledFor(logging.DEBUG) {
+		renderLazyArgs(args...)
+		log.Logger.Debug(args...)
+	}
+}
+
 func (log *Logger) Infof(format string, args ...interface{}) {
 	if log.IsEnabledFor(logging.INFO) {
 		renderLazyArgs(args...)

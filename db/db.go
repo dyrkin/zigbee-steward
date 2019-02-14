@@ -38,6 +38,11 @@ func (devices Devices) Add(device *model.Device) {
 	})
 }
 
+func (devices Devices) Get(ieeeAddress string) (*model.Device, bool) {
+	device, ok := database.tables.Devices[ieeeAddress]
+	return device, ok
+}
+
 func (devices Devices) Remove(ieeeAddress string) {
 	update(func() {
 		delete(database.tables.Devices, ieeeAddress)

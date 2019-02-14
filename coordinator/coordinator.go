@@ -99,15 +99,9 @@ func (c *Coordinator) Start() error {
 	switchLed(c)
 	registerEndpoints(c)
 	permitJoin(c)
-	printNetworkInfo(c)
 	c.started = true
 	log.Info("Coordinator started")
 	return nil
-}
-
-func printNetworkInfo(coordinator *Coordinator) {
-	res, _ := coordinator.RequestNodeDescription(coordinator.details.nwkAddress)
-	log.Info(spew.Sdump(res))
 }
 
 func (c *Coordinator) Reset() {
@@ -115,7 +109,7 @@ func (c *Coordinator) Reset() {
 		return c.networkProcessor.SysResetReq(1)
 	}
 
-	_, err := c.SyncCallRetryable(reset, SysResetIndType, 10*time.Second, 5)
+	_, err := c.SyncCallRetryable(reset, SysResetIndType, 15*time.Second, 5)
 	if err != nil {
 		log.Fatal(err)
 	}

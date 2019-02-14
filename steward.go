@@ -57,8 +57,9 @@ func (s *Steward) enableListeners() {
 		case err := <-s.coordinator.OnError():
 			log.Errorf("Received error: %s", err)
 		case announcedDevice := <-s.coordinator.OnDeviceAnnounce():
-			s.registerDevice(announcedDevice)
-		case _ = <-s.coordinator.OnDeviceLeave():
+			s.registrationQueue <- announcedDevice
+		case deviceLeave := <-s.coordinator.OnDeviceLeave():
+			s.unregisterDevice(deviceLeave)
 		case _ = <-s.coordinator.OnDeviceTc():
 		case incomingMessage := <-s.coordinator.OnIncomingMessage():
 			s.processIncomingMessage(incomingMessage)
@@ -84,7 +85,6 @@ func (s *Steward) SyncDataRequestRetryable(nwkAddress string, transactionId uint
 func (s *Steward) SyncDataRequest(nwkAddress string, transactionId uint8, request func(string, uint8) error, timeout time.Duration) (*zcl.ZclIncomingMessage, error) {
 	dataConfirmReceiver := make(chan interface{})
 	incomingMessageReceiver := make(chan interface{})
-	s.dataConfirmTopic.Register(dataConfirmReceiver)
 
 	responseChannel := make(chan *zcl.ZclIncomingMessage, 1)
 	errorChannel := make(chan error, 1)
@@ -114,19 +114,21 @@ func (s *Steward) SyncDataRequest(nwkAddress string, transactionId uint8, reques
 
 	confirmListener := func() {
 		deadline := time.NewTimer(timeout)
+		s.dataConfirmTopic.Register(dataConfirmReceiver)
 		for {
 			select {
 			case response := <-dataConfirmReceiver:
-				dataConfirm := response.(*znp.AfDataConfirm)
-				if dataConfirm.TransID == transactionId {
-					deadline.Stop()
-					switch dataConfirm.Status {
-					case znp.StatusSuccess:
-						go incomingMessageListener()
-					default:
-						errorChannel <- fmt.Errorf("invalid transcation status: [%s]", dataConfirm.Status)
+				if dataConfirm, ok := response.(*znp.AfDataConfirm); ok {
+					if dataConfirm.TransID == transactionId {
+						deadline.Stop()
+						switch dataConfirm.Status {
+						case znp.StatusSuccess:
+							go incomingMessageListener()
+						default:
+							errorChannel <- fmt.Errorf("invalid transcation status: [%s]", dataConfirm.Status)
+						}
+						return
 					}
-					return
 				}
 			case _ = <-deadline.C:
 				if !deadline.Stop() {
@@ -159,76 +161,83 @@ func (s *Steward) SyncDataRequest(nwkAddress string, transactionId uint8, reques
 
 func (s *Steward) enableRegistrationQueue() {
 	for announcedDevice := range s.registrationQueue {
-		ieeeAddress := announcedDevice.IEEEAddr
-		log.Infof("Registering device: [%s]", ieeeAddress)
-		device := &model.Device{Endpoints: []*model.Endpoint{}}
-		device.IEEEAddress = ieeeAddress
-		nwkAddress := announcedDevice.NwkAddr
-		device.NetworkAddress = nwkAddress
-		if announcedDevice.Capabilities.MainPowered > 0 {
-			device.MainPowered = true
-		}
-		transactionId := nextTransactionId()
-
-		attributesRequest := func(nwkAddress string, transactionId uint8) error {
-			return s.coordinator.ReadAttributes(nwkAddress, transactionId, []uint16{0x0004, 0x0005, 0x0007})
-		}
-
-		log.Debugf("Request device attributes: [%s]", ieeeAddress)
-		deviceDetailsResponse, err := s.SyncDataRequestRetryable(nwkAddress, transactionId, attributesRequest, 10*time.Second, 3)
-		if err != nil {
-			log.Errorf("Unable to register device: %s", err)
-			continue
-		}
-		deviceDetails := deviceDetailsResponse.Data.Command.(*cluster.ReadAttributesResponse)
-		if manufacturer, ok := deviceDetails.ReadAttributeStatuses[0].Attribute.Value.(string); ok {
-			device.Manufacturer = manufacturer
-		}
-		if modelId, ok := deviceDetails.ReadAttributeStatuses[1].Attribute.Value.(string); ok {
-			device.Model = modelId
-		}
-		if powerSource, ok := deviceDetails.ReadAttributeStatuses[2].Attribute.Value.(uint64); ok {
-			device.PowerSource = model.PowerSource(powerSource)
-		}
-
-		log.Debugf("Request node description: [%s]", ieeeAddress)
-		nodeDescription, err := s.coordinator.RequestNodeDescription(nwkAddress)
-		if err != nil {
-			log.Errorf("Unable to register device: %s", err)
-			continue
-		}
-
-		device.LogicalType = nodeDescription.LogicalType
-		device.ManufacturerId = nodeDescription.ManufacturerCode
-
-		log.Debugf("Request active endpoints: [%s]", ieeeAddress)
-		activeEndpoints, err := s.coordinator.RequestActiveEndpoints(nwkAddress)
-		if err != nil {
-			log.Errorf("Unable to register device: %s", err)
-			continue
-		}
-
-		for _, ep := range activeEndpoints.ActiveEPList {
-			log.Debugf("Request endpoint description: [%s], ep: [%d]", ieeeAddress, ep)
-			simpleDescription, err := s.coordinator.RequestSimpleDescription(nwkAddress, ep)
-			if err != nil {
-				log.Errorf("Unable to receive endpoint data: %d. Reason: %s", ep, err)
-				continue
-			}
-			endpoint := model.NewEndpoint(simpleDescription)
-			device.Endpoints = append(device.Endpoints, endpoint)
-		}
-
-		db.Database().Tables().Devices.Add(device)
-
-		log.Infof("Registered device [%s]. Manufacturer: [%s], Model: [%s], Logical type: [%s]",
-			ieeeAddress, device.Manufacturer, device.Model, device.LogicalType)
-		log.Debugf("Registered device:\n%s", func() string { return spew.Sdump(device) })
+		s.registerDevice(announcedDevice)
 	}
 }
 
 func (s *Steward) registerDevice(announcedDevice *znp.ZdoEndDeviceAnnceInd) {
-	s.registrationQueue <- announcedDevice
+	ieeeAddress := announcedDevice.IEEEAddr
+	log.Infof("Registering device [%s]", ieeeAddress)
+	if device, ok := db.Database().Tables().Devices.Get(ieeeAddress); ok {
+		log.Debugf("Device [%s] is already exists in DB. Just updating network address", ieeeAddress)
+		device.NetworkAddress = announcedDevice.NwkAddr
+		db.Database().Tables().Devices.Add(device)
+		return
+	}
+
+	device := &model.Device{Endpoints: []*model.Endpoint{}}
+	device.IEEEAddress = ieeeAddress
+	nwkAddress := announcedDevice.NwkAddr
+	device.NetworkAddress = nwkAddress
+	if announcedDevice.Capabilities.MainPowered > 0 {
+		device.MainPowered = true
+	}
+	transactionId := nextTransactionId()
+
+	attributesRequest := func(nwkAddress string, transactionId uint8) error {
+		return s.coordinator.ReadAttributes(nwkAddress, transactionId, []uint16{0x0004, 0x0005, 0x0007})
+	}
+
+	log.Debugf("Request device attributes: [%s]", ieeeAddress)
+	deviceDetailsResponse, err := s.SyncDataRequestRetryable(nwkAddress, transactionId, attributesRequest, 10*time.Second, 3)
+	if err != nil {
+		log.Errorf("Unable to register device: %s", err)
+		return
+	}
+	deviceDetails := deviceDetailsResponse.Data.Command.(*cluster.ReadAttributesResponse)
+	if manufacturer, ok := deviceDetails.ReadAttributeStatuses[0].Attribute.Value.(string); ok {
+		device.Manufacturer = manufacturer
+	}
+	if modelId, ok := deviceDetails.ReadAttributeStatuses[1].Attribute.Value.(string); ok {
+		device.Model = modelId
+	}
+	if powerSource, ok := deviceDetails.ReadAttributeStatuses[2].Attribute.Value.(uint64); ok {
+		device.PowerSource = model.PowerSource(powerSource)
+	}
+
+	log.Debugf("Request node description: [%s]", ieeeAddress)
+	nodeDescription, err := s.coordinator.RequestNodeDescription(nwkAddress)
+	if err != nil {
+		log.Errorf("Unable to register device: %s", err)
+		return
+	}
+
+	device.LogicalType = nodeDescription.LogicalType
+	device.ManufacturerId = nodeDescription.ManufacturerCode
+
+	log.Debugf("Request active endpoints: [%s]", ieeeAddress)
+	activeEndpoints, err := s.coordinator.RequestActiveEndpoints(nwkAddress)
+	if err != nil {
+		log.Errorf("Unable to register device: %s", err)
+		return
+	}
+
+	for _, ep := range activeEndpoints.ActiveEPList {
+		log.Debugf("Request endpoint description: [%s], ep: [%d]", ieeeAddress, ep)
+		simpleDescription, err := s.coordinator.RequestSimpleDescription(nwkAddress, ep)
+		if err != nil {
+			log.Errorf("Unable to receive endpoint data: %d. Reason: %s", ep, err)
+			continue
+		}
+		endpoint := model.NewEndpoint(simpleDescription)
+		device.Endpoints = append(device.Endpoints, endpoint)
+	}
+
+	db.Database().Tables().Devices.Add(device)
+
+	log.Infof("Registered new device [%s]. Manufacturer: [%s], Model: [%s], Logical type: [%s]",
+		ieeeAddress, device.Manufacturer, device.Model, device.LogicalType)
+	log.Debugf("Registered new device:\n%s", func() string { return spew.Sdump(device) })
 }
 
 func (s *Steward) processIncomingMessage(incomingMessage *znp.AfIncomingMessage) {
@@ -243,4 +252,14 @@ func (s *Steward) processIncomingMessage(incomingMessage *znp.AfIncomingMessage)
 
 func (s *Steward) processDataConfirm(dataConfirm *znp.AfDataConfirm) {
 	s.dataConfirmTopic.Broadcast <- dataConfirm
+}
+
+func (s *Steward) unregisterDevice(deviceLeave *znp.ZdoLeaveInd) {
+	ieeeAddress := deviceLeave.ExtAddr
+	if device, ok := db.Database().Tables().Devices.Get(ieeeAddress); ok {
+		log.Infof("Unregistering device: [%s]", ieeeAddress)
+		db.Database().Tables().Devices.Remove(ieeeAddress)
+		log.Infof("Unregistered device [%s]. Manufacturer: [%s], Model: [%s], Logical type: [%s]",
+			ieeeAddress, device.Manufacturer, device.Model, device.LogicalType)
+	}
 }

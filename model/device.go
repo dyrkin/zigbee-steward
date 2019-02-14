@@ -25,3 +25,38 @@ type Device struct {
 	IEEEAddress    string
 	Endpoints      []*Endpoint
 }
+
+func (d *Device) SupportedInClusters() []uint16 {
+	var clusters []uint16
+	for _, e := range d.Endpoints {
+		clusters = append(clusters, e.InClusterList...)
+	}
+	return clusters
+}
+
+func (d *Device) SupportedOutClusters() []uint16 {
+	var clusters []uint16
+	for _, e := range d.Endpoints {
+		clusters = append(clusters, e.OutClusterList...)
+	}
+	return clusters
+}
+
+func (ps PowerSource) String() string {
+	switch ps {
+	case MainsSinglePhase:
+		return "MainsSinglePhase"
+	case Mains2Phase:
+		return "Mains2Phase"
+	case Battery:
+		return "Battery"
+	case DCSource:
+		return "DCSource"
+	case EmergencyMainsConstantlyPowered:
+		return "EmergencyMainsConstantlyPowered"
+	case EmergencyMainsAndTransfer:
+		return "EmergencyMainsAndTransfer"
+	default:
+		return "Unknown"
+	}
+}
