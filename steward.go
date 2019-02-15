@@ -1,11 +1,9 @@
 package steward
 
 import (
-	"fmt"
 	"github.com/davecgh/go-spew/spew"
 	"github.com/dyrkin/zcl-go"
 	"github.com/dyrkin/zcl-go/cluster"
-	"github.com/dyrkin/zcl-go/frame"
 	"github.com/dyrkin/zigbee-steward/configuration"
 	"github.com/dyrkin/zigbee-steward/coordinator"
 	"github.com/dyrkin/zigbee-steward/db"
@@ -13,46 +11,24 @@ import (
 	"github.com/dyrkin/zigbee-steward/model"
 	"github.com/dyrkin/znp-go"
 	"github.com/tv42/topic"
-	"time"
 )
 
 var log = logger.MustGetLogger("steward")
-var nextTransactionId = frame.MakeDefaultTransactionIdProvider()
-
-type Channels struct {
-	onDeviceRegistered      chan *model.Device
-	onDeviceUnregistered    chan *model.Device
-	onDeviceBecameAvailable chan *model.Device
-	onDeviceIncomingMessage chan *model.DeviceIncomingMessage
-}
-
-func (c *Channels) OnDeviceRegistered() chan *model.Device {
-	return c.onDeviceRegistered
-}
-
-func (c *Channels) OnDeviceBecameAvailable() chan *model.Device {
-	return c.onDeviceBecameAvailable
-}
-
-func (c *Channels) OnDeviceUnregistered() chan *model.Device {
-	return c.onDeviceUnregistered
-}
-
-func (c *Channels) OnDeviceIncomingMessage() chan *model.DeviceIncomingMessage {
-	return c.onDeviceIncomingMessage
-}
 
 type Steward struct {
+	configuration        *configuration.Configuration
 	coordinator          *coordinator.Coordinator
 	registrationQueue    chan *znp.ZdoEndDeviceAnnceInd
 	zcl                  *zcl.Zcl
 	incomingMessageTopic *topic.Topic
 	dataConfirmTopic     *topic.Topic
 	channels             *Channels
+	functions            *Functions
 }
 
-func New() *Steward {
-	return &Steward{
+func New(configuration *configuration.Configuration) *Steward {
+	steward := &Steward{
+		configuration:        configuration,
 		registrationQueue:    make(chan *znp.ZdoEndDeviceAnnceInd),
 		zcl:                  zcl.New(),
 		incomingMessageTopic: topic.New(),
@@ -64,116 +40,35 @@ func New() *Steward {
 			onDeviceIncomingMessage: make(chan *model.DeviceIncomingMessage, 100),
 		},
 	}
+	steward.functions = &Functions{steward}
+	return steward
+}
+
+func (s *Steward) Start() {
+	s.coordinator = coordinator.New(s.configuration)
+	go s.enableRegistrationQueue()
+	go s.enableListeners()
+	go s.incomingMessageProcessor()
+	err := s.coordinator.Start()
+	if err != nil {
+		panic(err)
+	}
 }
 
 func (s *Steward) Channels() *Channels {
 	return s.channels
 }
 
-func (s *Steward) Start(configPath string) {
-	conf, err := configuration.Read(configPath)
-	if err != nil {
-		panic(err)
-	}
-
-	s.coordinator = coordinator.New(conf)
-	go s.enableRegistrationQueue()
-	go s.enableListeners()
-	go s.incomingMessageProcessor()
-	err = s.coordinator.Start()
-	if err != nil {
-		panic(err)
-	}
+func (s *Steward) Functions() *Functions {
+	return s.functions
 }
 
-func (s *Steward) SyncDataRequestRetryable(nwkAddress string, transactionId uint8, request func(string, uint8) error, timeout time.Duration, retries int) (*zcl.ZclIncomingMessage, error) {
-	zclIncomingMessage, err := s.SyncDataRequest(nwkAddress, transactionId, request, timeout)
-	switch {
-	case err != nil && retries > 0:
-		log.Errorf("%s. Retries: %d", err, retries)
-		return s.SyncDataRequestRetryable(nwkAddress, transactionId, request, timeout, retries-1)
-	case err != nil && retries == 0:
-		log.Errorf("failure: %s", err)
-		return nil, err
-	}
-	return zclIncomingMessage, nil
+func (s *Steward) Network() *coordinator.Network {
+	return s.coordinator.Network()
 }
 
-func (s *Steward) SyncDataRequest(nwkAddress string, transactionId uint8, request func(string, uint8) error, timeout time.Duration) (*zcl.ZclIncomingMessage, error) {
-	dataConfirmReceiver := make(chan interface{})
-	incomingMessageReceiver := make(chan interface{})
-
-	responseChannel := make(chan *zcl.ZclIncomingMessage, 1)
-	errorChannel := make(chan error, 1)
-
-	incomingMessageListener := func() {
-		deadline := time.NewTimer(timeout)
-		s.incomingMessageTopic.Register(incomingMessageReceiver)
-		for {
-			select {
-			case response := <-incomingMessageReceiver:
-				incomingMessage, ok := response.(*zcl.ZclIncomingMessage)
-				if (ok && incomingMessage.Data.TransactionSequenceNumber == transactionId) &&
-					(incomingMessage.SrcAddr == nwkAddress) {
-					deadline.Stop()
-					responseChannel <- incomingMessage
-					return
-				}
-			case _ = <-deadline.C:
-				if !deadline.Stop() {
-					errorChannel <- fmt.Errorf("timeout. didn't receive response for transcation: %d", transactionId)
-				}
-
-				return
-			}
-		}
-	}
-
-	confirmListener := func() {
-		deadline := time.NewTimer(timeout)
-		s.dataConfirmTopic.Register(dataConfirmReceiver)
-		for {
-			select {
-			case response := <-dataConfirmReceiver:
-				if dataConfirm, ok := response.(*znp.AfDataConfirm); ok {
-					if dataConfirm.TransID == transactionId {
-						deadline.Stop()
-						switch dataConfirm.Status {
-						case znp.StatusSuccess:
-							go incomingMessageListener()
-						default:
-							errorChannel <- fmt.Errorf("invalid transcation status: [%s]", dataConfirm.Status)
-						}
-						return
-					}
-				}
-			case _ = <-deadline.C:
-				if !deadline.Stop() {
-					errorChannel <- fmt.Errorf("timeout. didn't receive confiramtion for transcation: %d", transactionId)
-				}
-				return
-			}
-		}
-	}
-	go confirmListener()
-	err := request(nwkAddress, transactionId)
-
-	if err != nil {
-		s.dataConfirmTopic.Unregister(dataConfirmReceiver)
-		s.incomingMessageTopic.Unregister(incomingMessageReceiver)
-		return nil, fmt.Errorf("unable to send data request: %s", err)
-	}
-
-	select {
-	case err = <-errorChannel:
-		s.dataConfirmTopic.Unregister(dataConfirmReceiver)
-		s.incomingMessageTopic.Unregister(incomingMessageReceiver)
-		return nil, err
-	case zclIncomingMessage := <-responseChannel:
-		s.dataConfirmTopic.Unregister(dataConfirmReceiver)
-		s.incomingMessageTopic.Unregister(incomingMessageReceiver)
-		return zclIncomingMessage, nil
-	}
+func (s *Steward) Configuration() *configuration.Configuration {
+	return s.configuration
 }
 
 func (s *Steward) enableListeners() {
@@ -243,19 +138,12 @@ func (s *Steward) registerDevice(announcedDevice *znp.ZdoEndDeviceAnnceInd) {
 	if announcedDevice.Capabilities.MainPowered > 0 {
 		device.MainPowered = true
 	}
-	transactionId := nextTransactionId()
 
-	attributesRequest := func(nwkAddress string, transactionId uint8) error {
-		return s.coordinator.ReadAttributes(nwkAddress, transactionId, []uint16{0x0004, 0x0005, 0x0007})
-	}
-
-	log.Debugf("Request device attributes: [%s]", ieeeAddress)
-	deviceDetailsResponse, err := s.SyncDataRequestRetryable(nwkAddress, transactionId, attributesRequest, 10*time.Second, 3)
+	deviceDetails, err := s.functions.ReadAttributes(nwkAddress, []uint16{0x0004, 0x0005, 0x0007})
 	if err != nil {
 		log.Errorf("Unable to register device: %s", err)
 		return
 	}
-	deviceDetails := deviceDetailsResponse.Data.Command.(*cluster.ReadAttributesResponse)
 	if manufacturer, ok := deviceDetails.ReadAttributeStatuses[0].Attribute.Value.(string); ok {
 		device.Manufacturer = manufacturer
 	}

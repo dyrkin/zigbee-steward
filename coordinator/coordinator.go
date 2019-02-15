@@ -19,8 +19,10 @@ import (
 
 var log = logger.MustGetLogger("coordinator")
 
-type Details struct {
-	nwkAddress string
+const defaultTimeout = 10 * time.Second
+
+type Network struct {
+	Address string
 }
 
 type MessageChannels struct {
@@ -38,7 +40,7 @@ type Coordinator struct {
 	started          bool
 	networkProcessor *znp.Znp
 	messageChannels  *MessageChannels
-	details          *Details
+	network          *Network
 }
 
 func (c *Coordinator) OnIncomingMessage() chan *znp.AfIncomingMessage {
@@ -65,6 +67,10 @@ func (c *Coordinator) OnError() chan error {
 	return c.messageChannels.onError
 }
 
+func (c *Coordinator) Network() *Network {
+	return c.network
+}
+
 func New(config *configuration.Configuration) *Coordinator {
 	messageChannels := &MessageChannels{
 		onError:           make(chan error, 100),
@@ -78,7 +84,7 @@ func New(config *configuration.Configuration) *Coordinator {
 	return &Coordinator{
 		config:          config,
 		messageChannels: messageChannels,
-		details:         &Details{},
+		network:         &Network{},
 	}
 }
 
@@ -109,7 +115,7 @@ func (c *Coordinator) Reset() {
 		return c.networkProcessor.SysResetReq(1)
 	}
 
-	_, err := c.SyncCallRetryable(reset, SysResetIndType, 15*time.Second, 5)
+	_, err := c.syncCallRetryable(reset, SysResetIndType, 15*time.Second, 5)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -130,19 +136,24 @@ func (c *Coordinator) ReadAttributes(nwkAddress string, transactionId uint8, att
 		return err
 	}
 
-	_, err = np.AfDataRequest(nwkAddress, 255, 1, 0x0000, transactionId, options, 15, bin.Encode(f))
-
+	status, err := np.AfDataRequest(nwkAddress, 255, 1, 0x0000, transactionId, options, 15, bin.Encode(f))
+	if err == nil && status.Status != znp.StatusSuccess {
+		return fmt.Errorf("unable to read attributes. Status: [%s]", status.Status)
+	}
 	return err
 }
 
 func (c *Coordinator) RequestActiveEndpoints(nwkAddress string) (*znp.ZdoActiveEpRsp, error) {
 	np := c.networkProcessor
 	activeEpReq := func() error {
-		_, err := np.ZdoActiveEpReq(nwkAddress, nwkAddress)
+		status, err := np.ZdoActiveEpReq(nwkAddress, nwkAddress)
+		if err == nil && status.Status != znp.StatusSuccess {
+			return fmt.Errorf("unable to request active endpoints. Status: [%s]", status.Status)
+		}
 		return err
 	}
 
-	response, err := c.SyncCallRetryable(activeEpReq, ZdoActiveEpRspType, 10*time.Second, 3)
+	response, err := c.syncCallRetryable(activeEpReq, ZdoActiveEpRspType, defaultTimeout, 3)
 	if err == nil {
 		return response.(*znp.ZdoActiveEpRsp), nil
 	}
@@ -152,11 +163,14 @@ func (c *Coordinator) RequestActiveEndpoints(nwkAddress string) (*znp.ZdoActiveE
 func (c *Coordinator) RequestNodeDescription(nwkAddress string) (*znp.ZdoNodeDescRsp, error) {
 	np := c.networkProcessor
 	activeEpReq := func() error {
-		_, err := np.ZdoNodeDescReq(nwkAddress, nwkAddress)
+		status, err := np.ZdoNodeDescReq(nwkAddress, nwkAddress)
+		if err == nil && status.Status != znp.StatusSuccess {
+			return fmt.Errorf("unable to request node description. Status: [%s]", status.Status)
+		}
 		return err
 	}
 
-	response, err := c.SyncCallRetryable(activeEpReq, ZdoNodeDescRspType, 10*time.Second, 3)
+	response, err := c.syncCallRetryable(activeEpReq, ZdoNodeDescRspType, defaultTimeout, 3)
 	if err == nil {
 		return response.(*znp.ZdoNodeDescRsp), nil
 	}
@@ -166,18 +180,57 @@ func (c *Coordinator) RequestNodeDescription(nwkAddress string) (*znp.ZdoNodeDes
 func (c *Coordinator) RequestSimpleDescription(nwkAddress string, endpoint uint8) (*znp.ZdoSimpleDescRsp, error) {
 	np := c.networkProcessor
 	activeEpReq := func() error {
-		_, err := np.ZdoSimpleDescReq(nwkAddress, nwkAddress, endpoint)
+		status, err := np.ZdoSimpleDescReq(nwkAddress, nwkAddress, endpoint)
+		if err == nil && status.Status != znp.StatusSuccess {
+			return fmt.Errorf("unable to request simple description. Status: [%s]", status.Status)
+		}
 		return err
 	}
 
-	response, err := c.SyncCallRetryable(activeEpReq, ZdoSimpleDescRspType, 10*time.Second, 3)
+	response, err := c.syncCallRetryable(activeEpReq, ZdoSimpleDescRspType, defaultTimeout, 3)
 	if err == nil {
 		return response.(*znp.ZdoSimpleDescRsp), nil
 	}
 	return nil, err
 }
 
-func (c *Coordinator) SyncCall(call func() error, expectedType reflect.Type, timeout time.Duration) (interface{}, error) {
+func (c *Coordinator) Bind(dstAddr string, srcAddress string, srcEndpoint uint8, clusterId uint16,
+	dstAddrMode znp.AddrMode, dstAddress string, dstEndpoint uint8) (*znp.ZdoBindRsp, error) {
+	np := c.networkProcessor
+	bindReqReq := func() error {
+		status, err := np.ZdoBindReq(dstAddr, srcAddress, srcEndpoint, clusterId, dstAddrMode, dstAddress, dstEndpoint)
+		if err == nil && status.Status != znp.StatusSuccess {
+			return fmt.Errorf("unable to bind. Status: [%s]", status.Status)
+		}
+		return err
+	}
+
+	response, err := c.syncCallRetryable(bindReqReq, ZdoBindRspType, defaultTimeout, 3)
+	if err == nil {
+		return response.(*znp.ZdoBindRsp), nil
+	}
+	return nil, err
+}
+
+func (c *Coordinator) Unbind(dstAddr string, srcAddress string, srcEndpoint uint8, clusterId uint16,
+	dstAddrMode znp.AddrMode, dstAddress string, dstEndpoint uint8) (*znp.ZdoUnbindRsp, error) {
+	np := c.networkProcessor
+	bindReqReq := func() error {
+		status, err := np.ZdoUnbindReq(dstAddr, srcAddress, srcEndpoint, clusterId, dstAddrMode, dstAddress, dstEndpoint)
+		if err == nil && status.Status != znp.StatusSuccess {
+			return fmt.Errorf("unable to unbind. Status: [%s]", status.Status)
+		}
+		return err
+	}
+
+	response, err := c.syncCallRetryable(bindReqReq, ZdoUnbindRspType, defaultTimeout, 3)
+	if err == nil {
+		return response.(*znp.ZdoUnbindRsp), nil
+	}
+	return nil, err
+}
+
+func (c *Coordinator) syncCall(call func() error, expectedType reflect.Type, timeout time.Duration) (interface{}, error) {
 	receiver := make(chan interface{})
 	responseChannel := make(chan interface{}, 1)
 	errorChannel := make(chan error, 1)
@@ -216,12 +269,12 @@ func (c *Coordinator) SyncCall(call func() error, expectedType reflect.Type, tim
 	}
 }
 
-func (c *Coordinator) SyncCallRetryable(call func() error, expectedType reflect.Type, timeout time.Duration, retries int) (interface{}, error) {
-	response, err := c.SyncCall(call, expectedType, timeout)
+func (c *Coordinator) syncCallRetryable(call func() error, expectedType reflect.Type, timeout time.Duration, retries int) (interface{}, error) {
+	response, err := c.syncCall(call, expectedType, timeout)
 	switch {
 	case err != nil && retries > 0:
 		log.Errorf("%s. Retries: %d", err, retries)
-		return c.SyncCallRetryable(call, expectedType, timeout, retries-1)
+		return c.syncCallRetryable(call, expectedType, timeout, retries-1)
 	case err != nil && retries == 0:
 		log.Errorf("failure: %s", err)
 		return nil, err
@@ -381,7 +434,7 @@ func enrichNetworkDetails(coordinator *Coordinator) {
 	if err != nil {
 		log.Fatal(err)
 	}
-	coordinator.details.nwkAddress = deviceInfo.ShortAddr
+	coordinator.network.Address = deviceInfo.ShortAddr
 }
 
 func permitJoin(coordinator *Coordinator) {
@@ -389,7 +442,7 @@ func permitJoin(coordinator *Coordinator) {
 	if coordinator.config.PermitJoin {
 		timeout = 0xFF
 	}
-	coordinator.networkProcessor.SapiZbPermitJoiningRequest(coordinator.details.nwkAddress, timeout)
+	coordinator.networkProcessor.SapiZbPermitJoiningRequest(coordinator.network.Address, timeout)
 }
 
 func switchLed(coordinator *Coordinator) {
