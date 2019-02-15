@@ -6,18 +6,18 @@ import (
 	"github.com/dyrkin/zigbee-steward"
 	"github.com/dyrkin/zigbee-steward/configuration"
 	"github.com/dyrkin/zigbee-steward/logger"
-	"time"
+	"sync"
 )
 
 func main() {
+	log := logger.MustGetLogger("main")
+
 	conf, err := configuration.Read("configuration.yaml")
 	if err != nil {
 		panic(err)
 	}
 
 	stewie := steward.New(conf)
-
-	log := logger.MustGetLogger("main")
 
 	go func() {
 		for {
@@ -42,10 +42,11 @@ func main() {
 	}()
 
 	stewie.Start()
-	//Bind IKEA dimmer
-	//z.ZdoBindReq(msg.NwkAddr, msg.NwkAddr, 1, uint16(cluster.LevelControl), znp.AddrModeAddr16Bit, "0x0000", 1)
-	//z.ZdoBindReq(msg.NwkAddr, msg.IEEEAddr, 1, 8, znp.AddrModeAddr64Bit, "0x00124b00019c2ef9", 1)
-	//z.ZdoBindReq(msg.NwkAddr, msg.IEEEAddr, 1, 6, znp.AddrModeAddr64Bit, "0x00124b00019c2ef9", 1)
+	infiniteWait()
+}
 
-	time.Sleep(500 * time.Minute)
+func infiniteWait() {
+	wg := &sync.WaitGroup{}
+	wg.Add(1)
+	wg.Wait()
 }
