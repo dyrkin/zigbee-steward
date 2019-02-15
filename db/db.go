@@ -39,11 +39,15 @@ func (devices Devices) Add(device *model.Device) {
 }
 
 func (devices Devices) Get(ieeeAddress string) (*model.Device, bool) {
+	rw.RLock()
+	defer rw.RUnlock()
 	device, ok := database.tables.Devices[ieeeAddress]
 	return device, ok
 }
 
 func (devices Devices) GetByNetworkAddress(networkAddress string) (*model.Device, bool) {
+	rw.RLock()
+	defer rw.RUnlock()
 	for _, d := range devices {
 		if d.NetworkAddress == networkAddress {
 			return d, true
@@ -59,6 +63,8 @@ func (devices Devices) Remove(ieeeAddress string) {
 }
 
 func (devices Devices) Exists(ieeeAddress string) bool {
+	rw.RLock()
+	defer rw.RUnlock()
 	_, ok := database.tables.Devices[ieeeAddress]
 	return ok
 }

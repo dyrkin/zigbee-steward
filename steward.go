@@ -19,44 +19,55 @@ import (
 var log = logger.MustGetLogger("steward")
 var nextTransactionId = frame.MakeDefaultTransactionIdProvider()
 
-type Steward struct {
-	coordinator             *coordinator.Coordinator
-	registrationQueue       chan *znp.ZdoEndDeviceAnnceInd
-	zcl                     *zcl.Zcl
-	incomingMessageTopic    *topic.Topic
-	dataConfirmTopic        *topic.Topic
+type Channels struct {
 	onDeviceRegistered      chan *model.Device
 	onDeviceUnregistered    chan *model.Device
 	onDeviceBecameAvailable chan *model.Device
 	onDeviceIncomingMessage chan *model.DeviceIncomingMessage
 }
 
+func (c *Channels) OnDeviceRegistered() chan *model.Device {
+	return c.onDeviceRegistered
+}
+
+func (c *Channels) OnDeviceBecameAvailable() chan *model.Device {
+	return c.onDeviceBecameAvailable
+}
+
+func (c *Channels) OnDeviceUnregistered() chan *model.Device {
+	return c.onDeviceUnregistered
+}
+
+func (c *Channels) OnDeviceIncomingMessage() chan *model.DeviceIncomingMessage {
+	return c.onDeviceIncomingMessage
+}
+
+type Steward struct {
+	coordinator          *coordinator.Coordinator
+	registrationQueue    chan *znp.ZdoEndDeviceAnnceInd
+	zcl                  *zcl.Zcl
+	incomingMessageTopic *topic.Topic
+	dataConfirmTopic     *topic.Topic
+	channels             *Channels
+}
+
 func New() *Steward {
 	return &Steward{
-		registrationQueue:       make(chan *znp.ZdoEndDeviceAnnceInd),
-		zcl:                     zcl.New(),
-		incomingMessageTopic:    topic.New(),
-		dataConfirmTopic:        topic.New(),
-		onDeviceRegistered:      make(chan *model.Device, 10),
-		onDeviceUnregistered:    make(chan *model.Device, 10),
-		onDeviceIncomingMessage: make(chan *model.DeviceIncomingMessage, 100),
+		registrationQueue:    make(chan *znp.ZdoEndDeviceAnnceInd),
+		zcl:                  zcl.New(),
+		incomingMessageTopic: topic.New(),
+		dataConfirmTopic:     topic.New(),
+		channels: &Channels{
+			onDeviceRegistered:      make(chan *model.Device, 10),
+			onDeviceBecameAvailable: make(chan *model.Device, 10),
+			onDeviceUnregistered:    make(chan *model.Device, 10),
+			onDeviceIncomingMessage: make(chan *model.DeviceIncomingMessage, 100),
+		},
 	}
 }
 
-func (s *Steward) OnDeviceRegistered() chan *model.Device {
-	return s.onDeviceRegistered
-}
-
-func (s *Steward) OnBecameAvailable() chan *model.Device {
-	return s.onDeviceBecameAvailable
-}
-
-func (s *Steward) OnDeviceUnregistered() chan *model.Device {
-	return s.onDeviceUnregistered
-}
-
-func (s *Steward) OnDeviceIncomingMessage() chan *model.DeviceIncomingMessage {
-	return s.onDeviceIncomingMessage
+func (s *Steward) Channels() *Channels {
+	return s.channels
 }
 
 func (s *Steward) Start(configPath string) {
@@ -194,7 +205,7 @@ func (s *Steward) incomingMessageProcessor() {
 				IncomingMessage: incomingMessage,
 			}
 			select {
-			case s.onDeviceIncomingMessage <- deviceIncomingMessage:
+			case s.channels.onDeviceIncomingMessage <- deviceIncomingMessage:
 			default:
 				log.Errorf("onDeviceIncomingMessage channel has no capacity. Maybe channel has no subscribers")
 			}
@@ -218,7 +229,7 @@ func (s *Steward) registerDevice(announcedDevice *znp.ZdoEndDeviceAnnceInd) {
 		device.NetworkAddress = announcedDevice.NwkAddr
 		db.Database().Tables().Devices.Add(device)
 		select {
-		case s.onDeviceBecameAvailable <- device:
+		case s.channels.onDeviceBecameAvailable <- device:
 		default:
 			log.Errorf("onDeviceBecameAvailable channel has no capacity. Maybe channel has no subscribers")
 		}
@@ -285,7 +296,7 @@ func (s *Steward) registerDevice(announcedDevice *znp.ZdoEndDeviceAnnceInd) {
 
 	db.Database().Tables().Devices.Add(device)
 	select {
-	case s.onDeviceRegistered <- device:
+	case s.channels.onDeviceRegistered <- device:
 	default:
 		log.Errorf("onDeviceRegistered channel has no capacity. Maybe channel has no subscribers")
 	}
@@ -339,7 +350,7 @@ func (s *Steward) unregisterDevice(deviceLeave *znp.ZdoLeaveInd) {
 		log.Infof("Unregistering device: [%s]", ieeeAddress)
 		db.Database().Tables().Devices.Remove(ieeeAddress)
 		select {
-		case s.onDeviceUnregistered <- device:
+		case s.channels.onDeviceUnregistered <- device:
 		default:
 			log.Errorf("onDeviceUnregistered channel has no capacity. Maybe channel has no subscribers")
 		}
