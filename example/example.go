@@ -6,6 +6,7 @@ import (
 	"github.com/dyrkin/zigbee-steward"
 	"github.com/dyrkin/zigbee-steward/configuration"
 	"github.com/dyrkin/zigbee-steward/logger"
+	"math/rand"
 	"sync"
 )
 
@@ -35,10 +36,12 @@ func main() {
 				log.Infof("Unregistered device:\n%s", spew.Sdump(device))
 			case device := <-stewie.Channels().OnDeviceBecameAvailable():
 				log.Infof("Device became available:\n%s", spew.Sdump(device))
+				//Set random brightness to IKEA bulb
 				if device.Manufacturer == "IKEA of Sweden" && device.Model == "TRADFRI bulb E27 W opal 1000lm" {
 					go func() {
-						err := stewie.Functions().Cluster().Local().OnOff().Off(device.NetworkAddress, 1)
-						log.Infof("Off error: [%s]", err)
+						err := stewie.Functions().Cluster().Local().LevelControl().
+							MoveToLevel(device.NetworkAddress, 1, uint8(rand.Intn(255)), 0xffff)
+						log.Infof("Move to level error if present: [%s]", err)
 					}()
 				}
 			case deviceIncomingMessage := <-stewie.Channels().OnDeviceIncomingMessage():

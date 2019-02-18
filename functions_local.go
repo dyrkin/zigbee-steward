@@ -12,7 +12,8 @@ import (
 )
 
 type LocalClusterFunctions struct {
-	onOff *OnOff
+	onOff        *OnOff
+	levelControl *LevelControl
 }
 
 type LocalCluster struct {
@@ -30,11 +31,22 @@ func NewLocalClusterFunctions(coordinator *coordinator.Coordinator, zcl *zcl.Zcl
 				zcl:         zcl,
 			},
 		},
+		levelControl: &LevelControl{
+			LocalCluster: &LocalCluster{
+				clusterId:   cluster.LevelControl,
+				coordinator: coordinator,
+				zcl:         zcl,
+			},
+		},
 	}
 }
 
 func (f *LocalClusterFunctions) OnOff() *OnOff {
 	return f.onOff
+}
+
+func (f *LocalClusterFunctions) LevelControl() *LevelControl {
+	return f.levelControl
 }
 
 func (f *LocalCluster) localCommand(nwkAddress string, endpoint uint8, commandId uint8, command interface{}) error {
