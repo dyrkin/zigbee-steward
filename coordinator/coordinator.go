@@ -2,8 +2,6 @@ package coordinator
 
 import (
 	"fmt"
-	"github.com/dyrkin/bin"
-	"github.com/dyrkin/zcl-go/cluster"
 	"github.com/dyrkin/zcl-go/frame"
 	"github.com/tv42/topic"
 	"reflect"
@@ -19,6 +17,8 @@ import (
 
 var log = logger.MustGetLogger("coordinator")
 
+var nextTransactionId = frame.MakeDefaultTransactionIdProvider()
+
 const defaultTimeout = 10 * time.Second
 
 type Network struct {
@@ -31,8 +31,6 @@ type MessageChannels struct {
 	onDeviceLeave     chan *znp.ZdoLeaveInd
 	onDeviceTc        chan *znp.ZdoTcDevInd
 	onIncomingMessage chan *znp.AfIncomingMessage
-	onDataConfirm     chan *znp.AfDataConfirm
-	broadcast         *topic.Topic
 }
 
 type Coordinator struct {
@@ -41,14 +39,11 @@ type Coordinator struct {
 	networkProcessor *znp.Znp
 	messageChannels  *MessageChannels
 	network          *Network
+	broadcast        *topic.Topic
 }
 
 func (c *Coordinator) OnIncomingMessage() chan *znp.AfIncomingMessage {
 	return c.messageChannels.onIncomingMessage
-}
-
-func (c *Coordinator) OnDataConfirm() chan *znp.AfDataConfirm {
-	return c.messageChannels.onDataConfirm
 }
 
 func (c *Coordinator) OnDeviceTc() chan *znp.ZdoTcDevInd {
@@ -78,13 +73,12 @@ func New(config *configuration.Configuration) *Coordinator {
 		onDeviceLeave:     make(chan *znp.ZdoLeaveInd, 100),
 		onDeviceTc:        make(chan *znp.ZdoTcDevInd, 100),
 		onIncomingMessage: make(chan *znp.AfIncomingMessage, 100),
-		onDataConfirm:     make(chan *znp.AfDataConfirm, 100),
-		broadcast:         topic.New(),
 	}
 	return &Coordinator{
 		config:          config,
 		messageChannels: messageChannels,
 		network:         &Network{},
+		broadcast:       topic.New(),
 	}
 }
 
@@ -96,7 +90,7 @@ func (c *Coordinator) Start() error {
 	}
 	networkProtocol := unp.New(1, port)
 	c.networkProcessor = znp.New(networkProtocol)
-	mapMessageChannels(c.messageChannels, c.networkProcessor)
+	c.mapMessageChannels()
 	c.networkProcessor.Start()
 	configure(c)
 	subscribe(c)
@@ -121,29 +115,7 @@ func (c *Coordinator) Reset() {
 	}
 }
 
-func (c *Coordinator) ReadAttributes(nwkAddress string, transactionId uint8, attributeIds []uint16) error {
-	np := c.networkProcessor
-	options := &znp.AfDataRequestOptions{}
-	f, err := frame.New().
-		DisableDefaultResponse(true).
-		FrameType(frame.FrameTypeGlobal).
-		Direction(frame.DirectionClientServer).
-		CommandId(0x00).
-		Command(&cluster.ReadAttributesCommand{AttributeIDs: attributeIds}).
-		Build()
-
-	if err != nil {
-		return err
-	}
-
-	status, err := np.AfDataRequest(nwkAddress, 255, 1, 0x0000, transactionId, options, 15, bin.Encode(f))
-	if err == nil && status.Status != znp.StatusSuccess {
-		return fmt.Errorf("unable to read attributes. Status: [%s]", status.Status)
-	}
-	return err
-}
-
-func (c *Coordinator) RequestActiveEndpoints(nwkAddress string) (*znp.ZdoActiveEpRsp, error) {
+func (c *Coordinator) ActiveEndpoints(nwkAddress string) (*znp.ZdoActiveEpRsp, error) {
 	np := c.networkProcessor
 	activeEpReq := func() error {
 		status, err := np.ZdoActiveEpReq(nwkAddress, nwkAddress)
@@ -160,7 +132,7 @@ func (c *Coordinator) RequestActiveEndpoints(nwkAddress string) (*znp.ZdoActiveE
 	return nil, err
 }
 
-func (c *Coordinator) RequestNodeDescription(nwkAddress string) (*znp.ZdoNodeDescRsp, error) {
+func (c *Coordinator) NodeDescription(nwkAddress string) (*znp.ZdoNodeDescRsp, error) {
 	np := c.networkProcessor
 	activeEpReq := func() error {
 		status, err := np.ZdoNodeDescReq(nwkAddress, nwkAddress)
@@ -177,7 +149,7 @@ func (c *Coordinator) RequestNodeDescription(nwkAddress string) (*znp.ZdoNodeDes
 	return nil, err
 }
 
-func (c *Coordinator) RequestSimpleDescription(nwkAddress string, endpoint uint8) (*znp.ZdoSimpleDescRsp, error) {
+func (c *Coordinator) SimpleDescription(nwkAddress string, endpoint uint8) (*znp.ZdoSimpleDescRsp, error) {
 	np := c.networkProcessor
 	activeEpReq := func() error {
 		status, err := np.ZdoSimpleDescReq(nwkAddress, nwkAddress, endpoint)
@@ -230,13 +202,26 @@ func (c *Coordinator) Unbind(dstAddr string, srcAddress string, srcEndpoint uint
 	return nil, err
 }
 
+func (c *Coordinator) DataRequest(dstAddr string, dstEndpoint uint8, srcEndpoint uint8, clusterId uint16, options *znp.AfDataRequestOptions, radius uint8, data []uint8) (*znp.AfIncomingMessage, error) {
+	np := c.networkProcessor
+	dataRequest := func(networkAddress string, transactionId uint8) error {
+		status, err := np.AfDataRequest(networkAddress, dstEndpoint, srcEndpoint, clusterId, transactionId, options, radius, data)
+		if err == nil && status.Status != znp.StatusSuccess {
+			return fmt.Errorf("unable to unbind. Status: [%s]", status.Status)
+		}
+		return err
+	}
+
+	return c.syncDataRequestRetryable(dataRequest, dstAddr, nextTransactionId(), defaultTimeout, 3)
+}
+
 func (c *Coordinator) syncCall(call func() error, expectedType reflect.Type, timeout time.Duration) (interface{}, error) {
 	receiver := make(chan interface{})
 	responseChannel := make(chan interface{}, 1)
 	errorChannel := make(chan error, 1)
 	deadline := time.NewTimer(timeout)
 	go func() {
-		c.messageChannels.broadcast.Register(receiver)
+		c.broadcast.Register(receiver)
 		for {
 			select {
 			case response := <-receiver:
@@ -256,15 +241,15 @@ func (c *Coordinator) syncCall(call func() error, expectedType reflect.Type, tim
 	err := call()
 	if err != nil {
 		deadline.Stop()
-		c.messageChannels.broadcast.Unregister(receiver)
+		c.broadcast.Unregister(receiver)
 		return nil, err
 	}
 	select {
 	case err = <-errorChannel:
-		c.messageChannels.broadcast.Unregister(receiver)
+		c.broadcast.Unregister(receiver)
 		return nil, err
 	case response := <-responseChannel:
-		c.messageChannels.broadcast.Unregister(receiver)
+		c.broadcast.Unregister(receiver)
 		return response, nil
 	}
 }
@@ -282,35 +267,115 @@ func (c *Coordinator) syncCallRetryable(call func() error, expectedType reflect.
 	return response, nil
 }
 
-func mapMessageChannels(messageChannels *MessageChannels, networkProcessor *znp.Znp) {
+func (c *Coordinator) syncDataRequestRetryable(request func(string, uint8) error, nwkAddress string, transactionId uint8, timeout time.Duration, retries int) (*znp.AfIncomingMessage, error) {
+	incomingMessage, err := c.syncDataRequest(request, nwkAddress, transactionId, timeout)
+	switch {
+	case err != nil && retries > 0:
+		log.Errorf("%s. Retries: %d", err, retries)
+		return c.syncDataRequestRetryable(request, nwkAddress, transactionId, timeout, retries-1)
+	case err != nil && retries == 0:
+		log.Errorf("failure: %s", err)
+		return nil, err
+	}
+	return incomingMessage, nil
+}
+
+func (c *Coordinator) syncDataRequest(request func(string, uint8) error, nwkAddress string, transactionId uint8, timeout time.Duration) (*znp.AfIncomingMessage, error) {
+	messageReceiver := make(chan interface{})
+
+	responseChannel := make(chan *znp.AfIncomingMessage, 1)
+	errorChannel := make(chan error, 1)
+
+	incomingMessageListener := func() {
+		deadline := time.NewTimer(timeout)
+		for {
+			select {
+			case response := <-messageReceiver:
+				incomingMessage, ok := response.(*znp.AfIncomingMessage)
+				frm := frame.Decode(incomingMessage.Data)
+				if (ok && frm.TransactionSequenceNumber == transactionId) &&
+					(incomingMessage.SrcAddr == nwkAddress) {
+					deadline.Stop()
+					responseChannel <- incomingMessage
+					return
+				}
+			case _ = <-deadline.C:
+				if !deadline.Stop() {
+					errorChannel <- fmt.Errorf("timeout. didn't receive response for transcation: %d", transactionId)
+				}
+				return
+			}
+		}
+	}
+
+	confirmListener := func() {
+		deadline := time.NewTimer(timeout)
+		for {
+			c.broadcast.Register(messageReceiver)
+			select {
+			case response := <-messageReceiver:
+				if dataConfirm, ok := response.(*znp.AfDataConfirm); ok {
+					if dataConfirm.TransID == transactionId {
+						deadline.Stop()
+						switch dataConfirm.Status {
+						case znp.StatusSuccess:
+							go incomingMessageListener()
+						default:
+							errorChannel <- fmt.Errorf("invalid transcation status: [%s]", dataConfirm.Status)
+						}
+						return
+					}
+				}
+			case _ = <-deadline.C:
+				if !deadline.Stop() {
+					errorChannel <- fmt.Errorf("timeout. didn't receive confiramtion for transcation: %d", transactionId)
+				}
+				return
+			}
+		}
+	}
+	go confirmListener()
+	err := request(nwkAddress, transactionId)
+
+	if err != nil {
+		c.broadcast.Unregister(messageReceiver)
+		return nil, fmt.Errorf("unable to send data request: %s", err)
+	}
+
+	select {
+	case err = <-errorChannel:
+		c.broadcast.Unregister(messageReceiver)
+		return nil, err
+	case zclIncomingMessage := <-responseChannel:
+		c.broadcast.Unregister(messageReceiver)
+		return zclIncomingMessage, nil
+	}
+}
+
+func (c *Coordinator) mapMessageChannels() {
 	go func() {
 		for {
 			select {
-			case err := <-networkProcessor.Errors():
-				messageChannels.onError <- err
-			case incoming := <-networkProcessor.AsyncInbound():
+			case err := <-c.networkProcessor.Errors():
+				c.messageChannels.onError <- err
+			case incoming := <-c.networkProcessor.AsyncInbound():
 				debugIncoming := func(format string) {
 					log.Debugf(format, func() string { return spew.Sdump(incoming) })
 				}
+				c.broadcast.Broadcast <- incoming
 				switch message := incoming.(type) {
 				case *znp.ZdoEndDeviceAnnceInd:
 					debugIncoming("Device announce:\n%s")
-					messageChannels.onDeviceAnnounce <- message
+					c.messageChannels.onDeviceAnnounce <- message
 				case *znp.ZdoLeaveInd:
 					debugIncoming("Device leave:\n%s")
-					messageChannels.onDeviceLeave <- message
+					c.messageChannels.onDeviceLeave <- message
 				case *znp.ZdoTcDevInd:
 					debugIncoming("Device TC:\n%s")
-					messageChannels.onDeviceTc <- message
+					c.messageChannels.onDeviceTc <- message
 				case *znp.AfIncomingMessage:
 					debugIncoming("Incoming message:\n%s")
-					messageChannels.onIncomingMessage <- message
-				case *znp.AfDataConfirm:
-					debugIncoming("Data confirm:\n%s")
-					messageChannels.onDataConfirm <- message
-				default:
-					debugIncoming("Message:\n%s")
-					messageChannels.broadcast.Broadcast <- message
+					c.messageChannels.onIncomingMessage <- message
 				}
 			}
 		}

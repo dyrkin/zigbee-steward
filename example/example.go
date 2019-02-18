@@ -26,7 +26,7 @@ func main() {
 				log.Infof("Registered device:\n%s", spew.Sdump(device))
 				if device.Manufacturer == "IKEA of Sweden" && device.Model == "TRADFRI wireless dimmer" {
 					go func() {
-						rsp, err := stewie.Functions().Bind(device.NetworkAddress, device.IEEEAddress, 1,
+						rsp, err := stewie.Functions().Generic().Bind(device.NetworkAddress, device.IEEEAddress, 1,
 							uint16(cluster.LevelControl), stewie.Configuration().IEEEAddress, 1)
 						log.Infof("Bind result: [%v] [%s]", rsp, err)
 					}()

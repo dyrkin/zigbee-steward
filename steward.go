@@ -10,29 +10,26 @@ import (
 	"github.com/dyrkin/zigbee-steward/logger"
 	"github.com/dyrkin/zigbee-steward/model"
 	"github.com/dyrkin/znp-go"
-	"github.com/tv42/topic"
 )
 
 var log = logger.MustGetLogger("steward")
 
 type Steward struct {
-	configuration        *configuration.Configuration
-	coordinator          *coordinator.Coordinator
-	registrationQueue    chan *znp.ZdoEndDeviceAnnceInd
-	zcl                  *zcl.Zcl
-	incomingMessageTopic *topic.Topic
-	dataConfirmTopic     *topic.Topic
-	channels             *Channels
-	functions            *Functions
+	configuration     *configuration.Configuration
+	coordinator       *coordinator.Coordinator
+	registrationQueue chan *znp.ZdoEndDeviceAnnceInd
+	zcl               *zcl.Zcl
+	channels          *Channels
+	functions         *Functions
 }
 
 func New(configuration *configuration.Configuration) *Steward {
+	coordinator := coordinator.New(configuration)
 	steward := &Steward{
-		configuration:        configuration,
-		registrationQueue:    make(chan *znp.ZdoEndDeviceAnnceInd),
-		zcl:                  zcl.New(),
-		incomingMessageTopic: topic.New(),
-		dataConfirmTopic:     topic.New(),
+		configuration:     configuration,
+		coordinator:       coordinator,
+		registrationQueue: make(chan *znp.ZdoEndDeviceAnnceInd),
+		zcl:               zcl.New(),
 		channels: &Channels{
 			onDeviceRegistered:      make(chan *model.Device, 10),
 			onDeviceBecameAvailable: make(chan *model.Device, 10),
@@ -40,15 +37,13 @@ func New(configuration *configuration.Configuration) *Steward {
 			onDeviceIncomingMessage: make(chan *model.DeviceIncomingMessage, 100),
 		},
 	}
-	steward.functions = &Functions{steward}
+	steward.functions = NewFunctions(coordinator)
 	return steward
 }
 
 func (s *Steward) Start() {
-	s.coordinator = coordinator.New(s.configuration)
 	go s.enableRegistrationQueue()
 	go s.enableListeners()
-	go s.incomingMessageProcessor()
 	err := s.coordinator.Start()
 	if err != nil {
 		panic(err)
@@ -83,29 +78,6 @@ func (s *Steward) enableListeners() {
 		case _ = <-s.coordinator.OnDeviceTc():
 		case incomingMessage := <-s.coordinator.OnIncomingMessage():
 			s.processIncomingMessage(incomingMessage)
-		case dataConfirm := <-s.coordinator.OnDataConfirm():
-			s.processDataConfirm(dataConfirm)
-		}
-	}
-}
-
-func (s *Steward) incomingMessageProcessor() {
-	incomingMessages := make(chan interface{}, 100)
-	s.incomingMessageTopic.Register(incomingMessages)
-	for incoming := range incomingMessages {
-		incomingMessage := incoming.(*zcl.ZclIncomingMessage)
-		if device, ok := db.Database().Tables().Devices.GetByNetworkAddress(incomingMessage.SrcAddr); ok {
-			deviceIncomingMessage := &model.DeviceIncomingMessage{
-				Device:          device,
-				IncomingMessage: incomingMessage,
-			}
-			select {
-			case s.channels.onDeviceIncomingMessage <- deviceIncomingMessage:
-			default:
-				log.Errorf("onDeviceIncomingMessage channel has no capacity. Maybe channel has no subscribers")
-			}
-		} else {
-			log.Errorf("Received message from unknown device [%s]", incomingMessage.SrcAddr)
 		}
 	}
 }
@@ -139,7 +111,7 @@ func (s *Steward) registerDevice(announcedDevice *znp.ZdoEndDeviceAnnceInd) {
 		device.MainPowered = true
 	}
 
-	deviceDetails, err := s.functions.ReadAttributes(nwkAddress, []uint16{0x0004, 0x0005, 0x0007})
+	deviceDetails, err := s.Functions().Cluster().Global().ReadAttributes(nwkAddress, []uint16{0x0004, 0x0005, 0x0007})
 	if err != nil {
 		log.Errorf("Unable to register device: %s", err)
 		return
@@ -155,7 +127,7 @@ func (s *Steward) registerDevice(announcedDevice *znp.ZdoEndDeviceAnnceInd) {
 	}
 
 	log.Debugf("Request node description: [%s]", ieeeAddress)
-	nodeDescription, err := s.coordinator.RequestNodeDescription(nwkAddress)
+	nodeDescription, err := s.coordinator.NodeDescription(nwkAddress)
 	if err != nil {
 		log.Errorf("Unable to register device: %s", err)
 		return
@@ -165,7 +137,7 @@ func (s *Steward) registerDevice(announcedDevice *znp.ZdoEndDeviceAnnceInd) {
 	device.ManufacturerId = nodeDescription.ManufacturerCode
 
 	log.Debugf("Request active endpoints: [%s]", ieeeAddress)
-	activeEndpoints, err := s.coordinator.RequestActiveEndpoints(nwkAddress)
+	activeEndpoints, err := s.coordinator.ActiveEndpoints(nwkAddress)
 	if err != nil {
 		log.Errorf("Unable to register device: %s", err)
 		return
@@ -173,7 +145,7 @@ func (s *Steward) registerDevice(announcedDevice *znp.ZdoEndDeviceAnnceInd) {
 
 	for _, ep := range activeEndpoints.ActiveEPList {
 		log.Debugf("Request endpoint description: [%s], ep: [%d]", ieeeAddress, ep)
-		simpleDescription, err := s.coordinator.RequestSimpleDescription(nwkAddress, ep)
+		simpleDescription, err := s.coordinator.SimpleDescription(nwkAddress, ep)
 		if err != nil {
 			log.Errorf("Unable to receive endpoint data: %d. Reason: %s", ep, err)
 			continue
@@ -222,14 +194,22 @@ func (s *Steward) processIncomingMessage(incomingMessage *znp.AfIncomingMessage)
 	zclIncomingMessage, err := s.zcl.ToZclIncomingMessage(incomingMessage)
 	if err == nil {
 		log.Debugf("Foundation Frame Payload\n%s\n", func() string { return spew.Sdump(zclIncomingMessage) })
-		s.incomingMessageTopic.Broadcast <- zclIncomingMessage
+		if device, ok := db.Database().Tables().Devices.GetByNetworkAddress(incomingMessage.SrcAddr); ok {
+			deviceIncomingMessage := &model.DeviceIncomingMessage{
+				Device:          device,
+				IncomingMessage: zclIncomingMessage,
+			}
+			select {
+			case s.channels.onDeviceIncomingMessage <- deviceIncomingMessage:
+			default:
+				log.Errorf("onDeviceIncomingMessage channel has no capacity. Maybe channel has no subscribers")
+			}
+		} else {
+			log.Errorf("Received message from unknown device [%s]", incomingMessage.SrcAddr)
+		}
 	} else {
 		log.Errorf("Unsupported incoming message:\n%s\n", func() string { return spew.Sdump(incomingMessage) })
 	}
-}
-
-func (s *Steward) processDataConfirm(dataConfirm *znp.AfDataConfirm) {
-	s.dataConfirmTopic.Broadcast <- dataConfirm
 }
 
 func (s *Steward) unregisterDevice(deviceLeave *znp.ZdoLeaveInd) {
