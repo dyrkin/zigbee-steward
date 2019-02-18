@@ -111,7 +111,7 @@ func (s *Steward) registerDevice(announcedDevice *znp.ZdoEndDeviceAnnceInd) {
 		device.MainPowered = true
 	}
 
-	deviceDetails, err := s.Functions().Cluster().Global().ReadAttributes(nwkAddress, []uint16{0x0004, 0x0005, 0x0007})
+	deviceDetails, err := s.Functions().Cluster().Global().ReadAttributes(nwkAddress, cluster.Basic, []uint16{0x0004, 0x0005, 0x0007})
 	if err != nil {
 		log.Errorf("Unable to register device: %s", err)
 		return

@@ -291,13 +291,14 @@ func (c *Coordinator) syncDataRequest(request func(string, uint8) error, nwkAddr
 		for {
 			select {
 			case response := <-messageReceiver:
-				incomingMessage, ok := response.(*znp.AfIncomingMessage)
-				frm := frame.Decode(incomingMessage.Data)
-				if (ok && frm.TransactionSequenceNumber == transactionId) &&
-					(incomingMessage.SrcAddr == nwkAddress) {
-					deadline.Stop()
-					responseChannel <- incomingMessage
-					return
+				if incomingMessage, ok := response.(*znp.AfIncomingMessage); ok {
+					frm := frame.Decode(incomingMessage.Data)
+					if (frm.TransactionSequenceNumber == transactionId) &&
+						(incomingMessage.SrcAddr == nwkAddress) {
+						deadline.Stop()
+						responseChannel <- incomingMessage
+						return
+					}
 				}
 			case _ = <-deadline.C:
 				if !deadline.Stop() {

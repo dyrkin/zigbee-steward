@@ -15,8 +15,8 @@ type GlobalClusterFunctions struct {
 	zcl         *zcl.Zcl
 }
 
-func (f *GlobalClusterFunctions) ReadAttributes(nwkAddress string, attributeIds []uint16) (*cluster.ReadAttributesResponse, error) {
-	response, err := f.globalCommand(nwkAddress, 0x00, &cluster.ReadAttributesCommand{attributeIds})
+func (f *GlobalClusterFunctions) ReadAttributes(nwkAddress string, clusterId cluster.ClusterId, attributeIds []uint16) (*cluster.ReadAttributesResponse, error) {
+	response, err := f.globalCommand(nwkAddress, clusterId, 0x00, &cluster.ReadAttributesCommand{attributeIds})
 
 	if err == nil {
 		return response.(*cluster.ReadAttributesResponse), nil
@@ -24,8 +24,8 @@ func (f *GlobalClusterFunctions) ReadAttributes(nwkAddress string, attributeIds 
 	return nil, err
 }
 
-func (f *GlobalClusterFunctions) WriteAttributes(nwkAddress string, writeAttributeRecords []*cluster.WriteAttributeRecord) (*cluster.WriteAttributesResponse, error) {
-	response, err := f.globalCommand(nwkAddress, 0x02, &cluster.WriteAttributesCommand{writeAttributeRecords})
+func (f *GlobalClusterFunctions) WriteAttributes(nwkAddress string, clusterId cluster.ClusterId, writeAttributeRecords []*cluster.WriteAttributeRecord) (*cluster.WriteAttributesResponse, error) {
+	response, err := f.globalCommand(nwkAddress, clusterId, 0x02, &cluster.WriteAttributesCommand{writeAttributeRecords})
 
 	if err == nil {
 		return response.(*cluster.WriteAttributesResponse), nil
@@ -33,7 +33,7 @@ func (f *GlobalClusterFunctions) WriteAttributes(nwkAddress string, writeAttribu
 	return nil, err
 }
 
-func (f *GlobalClusterFunctions) globalCommand(nwkAddress string, commandId uint8, command interface{}) (interface{}, error) {
+func (f *GlobalClusterFunctions) globalCommand(nwkAddress string, clusterId cluster.ClusterId, commandId uint8, command interface{}) (interface{}, error) {
 	options := &znp.AfDataRequestOptions{}
 	frm, err := frame.New().
 		DisableDefaultResponse(true).
@@ -47,7 +47,7 @@ func (f *GlobalClusterFunctions) globalCommand(nwkAddress string, commandId uint
 		return nil, err
 	}
 
-	response, err := f.coordinator.DataRequest(nwkAddress, 255, 1, 0x0000, options, 15, bin.Encode(frm))
+	response, err := f.coordinator.DataRequest(nwkAddress, 255, 1, uint16(clusterId), options, 15, bin.Encode(frm))
 	if err == nil {
 		zclIncomingMessage, err := f.zcl.ToZclIncomingMessage(response)
 		if err == nil {

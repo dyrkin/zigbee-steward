@@ -19,10 +19,7 @@ func NewFunctions(coordinator *coordinator.Coordinator) *Functions {
 				coordinator: coordinator,
 				zcl:         zcl,
 			},
-			local: &LocalClusterFunctions{
-				coordinator: coordinator,
-				zcl:         zcl,
-			},
+			local: NewLocalClusterFunctions(coordinator, zcl),
 		},
 	}
 }

@@ -35,6 +35,12 @@ func main() {
 				log.Infof("Unregistered device:\n%s", spew.Sdump(device))
 			case device := <-stewie.Channels().OnDeviceBecameAvailable():
 				log.Infof("Device became available:\n%s", spew.Sdump(device))
+				if device.Manufacturer == "IKEA of Sweden" && device.Model == "TRADFRI bulb E27 W opal 1000lm" {
+					go func() {
+						err := stewie.Functions().Cluster().Local().OnOff().Off(device.NetworkAddress, 1)
+						log.Infof("Off error: [%s]", err)
+					}()
+				}
 			case deviceIncomingMessage := <-stewie.Channels().OnDeviceIncomingMessage():
 				log.Infof("Device received incoming message:\n%s", spew.Sdump(deviceIncomingMessage))
 			}
