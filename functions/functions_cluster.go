@@ -1,4 +1,4 @@
-package steward
+package functions
 
 type ClusterFunctions struct {
 	global *GlobalClusterFunctions

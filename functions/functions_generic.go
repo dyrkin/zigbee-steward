@@ -1,4 +1,4 @@
-package steward
+package functions
 
 import (
 	"github.com/dyrkin/zigbee-steward/coordinator"

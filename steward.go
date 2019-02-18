@@ -7,6 +7,7 @@ import (
 	"github.com/dyrkin/zigbee-steward/configuration"
 	"github.com/dyrkin/zigbee-steward/coordinator"
 	"github.com/dyrkin/zigbee-steward/db"
+	"github.com/dyrkin/zigbee-steward/functions"
 	"github.com/dyrkin/zigbee-steward/logger"
 	"github.com/dyrkin/zigbee-steward/model"
 	"github.com/dyrkin/znp-go"
@@ -20,16 +21,17 @@ type Steward struct {
 	registrationQueue chan *znp.ZdoEndDeviceAnnceInd
 	zcl               *zcl.Zcl
 	channels          *Channels
-	functions         *Functions
+	functions         *functions.Functions
 }
 
 func New(configuration *configuration.Configuration) *Steward {
 	coordinator := coordinator.New(configuration)
+	zcl := zcl.New()
 	steward := &Steward{
 		configuration:     configuration,
 		coordinator:       coordinator,
 		registrationQueue: make(chan *znp.ZdoEndDeviceAnnceInd),
-		zcl:               zcl.New(),
+		zcl:               zcl,
 		channels: &Channels{
 			onDeviceRegistered:      make(chan *model.Device, 10),
 			onDeviceBecameAvailable: make(chan *model.Device, 10),
@@ -37,7 +39,7 @@ func New(configuration *configuration.Configuration) *Steward {
 			onDeviceIncomingMessage: make(chan *model.DeviceIncomingMessage, 100),
 		},
 	}
-	steward.functions = NewFunctions(coordinator)
+	steward.functions = functions.New(coordinator, zcl)
 	return steward
 }
 
@@ -54,7 +56,7 @@ func (s *Steward) Channels() *Channels {
 	return s.channels
 }
 
-func (s *Steward) Functions() *Functions {
+func (s *Steward) Functions() *functions.Functions {
 	return s.functions
 }
 

@@ -1,4 +1,4 @@
-package steward
+package functions
 
 import (
 	"fmt"

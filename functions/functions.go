@@ -1,17 +1,19 @@
-package steward
+package functions
 
 import (
 	"github.com/dyrkin/zcl-go"
 	"github.com/dyrkin/zigbee-steward/coordinator"
+	"github.com/dyrkin/zigbee-steward/logger"
 )
+
+var log = logger.MustGetLogger("functions")
 
 type Functions struct {
 	generic *GenericFunctions
 	cluster *ClusterFunctions
 }
 
-func NewFunctions(coordinator *coordinator.Coordinator) *Functions {
-	zcl := zcl.New()
+func New(coordinator *coordinator.Coordinator, zcl *zcl.Zcl) *Functions {
 	return &Functions{
 		generic: &GenericFunctions{coordinator: coordinator},
 		cluster: &ClusterFunctions{
