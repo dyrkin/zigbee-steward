@@ -5,6 +5,7 @@ import (
 	"github.com/dyrkin/zcl-go/frame"
 	"github.com/tv42/topic"
 	"reflect"
+	"sync"
 	"time"
 
 	"github.com/davecgh/go-spew/spew"
@@ -220,8 +221,11 @@ func (c *Coordinator) syncCall(call func() error, expectedType reflect.Type, tim
 	responseChannel := make(chan interface{}, 1)
 	errorChannel := make(chan error, 1)
 	deadline := time.NewTimer(timeout)
+	var wg sync.WaitGroup
+	wg.Add(1)
 	go func() {
 		c.broadcast.Register(receiver)
+		wg.Done()
 		for {
 			select {
 			case response := <-receiver:
@@ -238,6 +242,7 @@ func (c *Coordinator) syncCall(call func() error, expectedType reflect.Type, tim
 			}
 		}
 	}()
+	wg.Wait()
 	err := call()
 	if err != nil {
 		deadline.Stop()
