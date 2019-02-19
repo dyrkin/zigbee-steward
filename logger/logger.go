@@ -18,7 +18,7 @@ func MustGetLogger(module string) *Logger {
 	backend := logging.NewLogBackend(os.Stdout, "", 0)
 	backendFormatter := logging.NewBackendFormatter(backend, format)
 	backendLeveled := logging.AddModuleLevel(backendFormatter)
-	backendLeveled.SetLevel(logging.INFO, "")
+	backendLeveled.SetLevel(logging.DEBUG, "")
 
 	logging.SetBackend(backendLeveled)
 	return &Logger{log}

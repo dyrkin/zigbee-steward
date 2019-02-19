@@ -13,10 +13,7 @@ import (
 func main() {
 	log := logger.MustGetLogger("main")
 
-	conf, err := configuration.Read("configuration.yaml")
-	if err != nil {
-		panic(err)
-	}
+	conf := configuration.Default()
 
 	stewie := steward.New(conf)
 

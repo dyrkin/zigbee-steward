@@ -1,9 +1,5 @@
 package configuration
 
-import (
-	"github.com/dyrkin/zigbee-steward/yml"
-)
-
 type Serial struct {
 	PortName string
 	BaudRate int
@@ -19,14 +15,17 @@ type Configuration struct {
 	Serial      *Serial
 }
 
-func Read(path string) (*Configuration, error) {
-	configuration := &Configuration{}
-	if err := yml.Read(path, configuration); err != nil {
-		return nil, err
+func Default() *Configuration {
+	return &Configuration{
+		PermitJoin:  false,
+		IEEEAddress: "0x7a2d6265656e6574",
+		PanId:       0x1234,
+		NetworkKey:  [16]uint8{4, 3, 2, 1, 9, 8, 7, 6, 255, 254, 253, 252, 50, 49, 48, 47},
+		Channels:    []uint8{11, 12},
+		Led:         false,
+		Serial: &Serial{
+			PortName: "/dev/tty.usbmodem14101",
+			BaudRate: 115200,
+		},
 	}
-	return configuration, nil
-}
-
-func Write(path string, configuration *Configuration) error {
-	return yml.Write(path, configuration)
 }
