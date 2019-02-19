@@ -314,10 +314,14 @@ func (c *Coordinator) syncDataRequest(request func(string, uint8) error, nwkAddr
 		}
 	}
 
+	var wg sync.WaitGroup
+	wg.Add(1)
+
 	confirmListener := func() {
 		deadline := time.NewTimer(timeout)
+		c.broadcast.Register(messageReceiver)
+		wg.Done()
 		for {
-			c.broadcast.Register(messageReceiver)
 			select {
 			case response := <-messageReceiver:
 				if dataConfirm, ok := response.(*znp.AfDataConfirm); ok {
@@ -341,6 +345,7 @@ func (c *Coordinator) syncDataRequest(request func(string, uint8) error, nwkAddr
 		}
 	}
 	go confirmListener()
+	wg.Wait()
 	err := request(nwkAddress, transactionId)
 
 	if err != nil {
