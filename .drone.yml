@@ -1,0 +1,6 @@
+pipeline:
+  test:
+    image: golang
+    commands:
+      - go install
+      - go test ./...
