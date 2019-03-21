@@ -68,8 +68,8 @@ func (f *LocalCluster) localCommand(nwkAddress string, endpoint uint8, commandId
 		zclIncomingMessage, err := f.zcl.ToZclIncomingMessage(response)
 		if err == nil {
 			zclCommand := zclIncomingMessage.Data.Command.(*cluster.DefaultResponseCommand)
-			if err == nil && zclCommand.Status != cluster.ZclStatusSuccess {
-				return fmt.Errorf("unable to run command [%d] on cluster [%d]. Status: [%s]. Reason: %s", commandId, f.clusterId, zclCommand.Status)
+			if zclCommand.Status != cluster.ZclStatusSuccess {
+				return fmt.Errorf("unable to run command [%d] on cluster [%d]. Status: [%d]. Reason: %s", commandId, f.clusterId, zclCommand.Status, err)
 			}
 			return nil
 		} else {
