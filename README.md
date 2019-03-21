@@ -1,5 +1,26 @@
-package main
+# ZigBee-Steward
 
+[![Build Status](https://cloud.drone.io/api/badges/dyrkin/zigbee-steward/status.svg??branch=master)](https://cloud.drone.io/dyrkin/zigbee-steward)
+
+## Overview
+
+Bla bla bla
+
+## Example
+
+In this example, we are going to send **toggle** command to IKEA TRÅDFRI bulb using Xiaomi  Aqara Wireless Remote Switch. 
+To prepare, follow the steps:
+
+1. Connect ZigBee stick cc2531 to USB;
+2. Flash it using instruction: https://www.zigbee2mqtt.io/getting_started/flashing_the_cc2531.html;
+3. Run the example;
+4. Pair IKEA TRÅDFRI bulb by repeating 6 ONs and 5 OFFs one by one (ON -> OFF, ON -> OFF, ON -> OFF, ON -> OFF, ON -> OFF, ON);
+5. Pair Xiaomi  Aqara Wireless Remote Switch by holding the button for ~10 seconds until blue LEDs start blinking.
+
+Now you can toggle the bulb using the remote switch. Just click on it.
+
+
+```go
 import (
 	"fmt"
 	"github.com/davecgh/go-spew/spew"
@@ -85,14 +106,6 @@ func infiniteWait() {
 	wg.Add(1)
 	wg.Wait()
 }
+```
 
-//TODO Remove this
-func subscribeForLevelControlEvents(stewie *steward.Steward, device *model.Device) {
-	if device.Manufacturer == "IKEA of Sweden" && device.Model == "TRADFRI wireless dimmer" {
-		go func() {
-			rsp, err := stewie.Functions().Generic().Bind(device.NetworkAddress, device.IEEEAddress, 1,
-				uint16(cluster.LevelControl), stewie.Configuration().IEEEAddress, 1)
-			fmt.Printf("Bind result: [%v] [%s]", rsp, err)
-		}()
-	}
-}
+Full [examples](example/example.go)
