@@ -4,7 +4,7 @@ require (
 	github.com/davecgh/go-spew v1.1.1
 	github.com/dyrkin/bin v0.0.0-20190204210718-06bd23f8c0ce
 	github.com/dyrkin/unp-go v1.0.2
-	github.com/dyrkin/zcl-go v0.0.0-20190217233400-50eb0fddbf03
+	github.com/dyrkin/zcl-go v0.0.0-20190327145041-12e9da09dc07
 	github.com/dyrkin/znp-go v0.0.0-20190319130731-f2cccabe8c69
 	github.com/natefinch/atomic v0.0.0-20150920032501-a62ce929ffcc
 	github.com/op/go-logging v0.0.0-20160315200505-970db520ece7
